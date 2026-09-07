@@ -1,10 +1,11 @@
 import React from 'react';
-import { Film, Settings as SettingsIcon, Plus, Download, Sparkles, FileCode, Home, Folder } from 'lucide-react';
+import { Film, Settings as SettingsIcon, Plus, Download, Sparkles, FileCode, Home, Folder, Keyboard } from 'lucide-react';
 
 interface HeaderProps {
   onHomeClick?: () => void;
   onNewProject: () => void;
   onOpenProjects?: () => void;
+  onOpenShortcuts?: () => void;
   onOpenSettings: () => void;
   onOpenEditPlan?: () => void;
   onExport: () => void;
@@ -18,6 +19,7 @@ export const Header: React.FC<HeaderProps> = ({
   onHomeClick,
   onNewProject,
   onOpenProjects,
+  onOpenShortcuts,
   onOpenSettings,
   onOpenEditPlan,
   onExport,
@@ -91,9 +93,22 @@ export const Header: React.FC<HeaderProps> = ({
         )}
 
         {onOpenProjects && (
-          <button className="btn btn-outline" onClick={onOpenProjects} title="Open Projects Manager" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+          <button className="btn btn-outline" onClick={onOpenProjects} title="Open Projects Manager (P)" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
             <Folder size={15} />
             <span>Projects</span>
+          </button>
+        )}
+
+        {onOpenShortcuts && (
+          <button
+            className="btn btn-outline"
+            onClick={onOpenShortcuts}
+            title="Keyboard Shortcuts (?)"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.4rem', padding: '0.55rem 0.8rem' }}
+          >
+            <Keyboard size={15} />
+            <span>Shortcuts</span>
+            <kbd style={{ fontSize: '0.68rem', background: 'rgba(255,255,255,0.1)', padding: '1px 4px', borderRadius: '3px', fontFamily: 'monospace' }}>?</kbd>
           </button>
         )}
 

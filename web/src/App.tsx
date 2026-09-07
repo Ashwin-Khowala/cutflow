@@ -1,8 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Header } from './components/Header';
 import { LandingPage } from './components/LandingPage';
 import { UploadHero } from './components/UploadHero';
-import { VideoPlayer } from './components/VideoPlayer';
+import { VideoPlayer, type VideoPlayerHandle } from './components/VideoPlayer';
 import { Timeline } from './components/Timeline';
 import { TranscriptList } from './components/TranscriptList';
 import { StatsBar } from './components/StatsBar';
@@ -11,6 +11,7 @@ import { SettingsModal } from './components/SettingsModal';
 import { ProcessingModal } from './components/ProcessingModal';
 import { EditPlanViewer } from './components/EditPlanViewer';
 import { ProjectsModal } from './components/ProjectsModal';
+import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import type { ProjectData, CutProposal, Settings, SelectedClip } from './types';
 import './App.css';
 
@@ -28,6 +29,8 @@ function App() {
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isEditPlanOpen, setIsEditPlanOpen] = useState<boolean>(false);
   const [isProjectsModalOpen, setIsProjectsModalOpen] = useState<boolean>(false);
+  const [isShortcutsOpen, setIsShortcutsOpen] = useState<boolean>(false);
+  const videoPlayerRef = useRef<VideoPlayerHandle>(null);
   const [processingState, setProcessingState] = useState<{
     isOpen: boolean;
     title: string;
@@ -312,22 +315,282 @@ function App() {
     showToast(`Cleaned ${shortKeeps.length} short clip${shortKeeps.length > 1 ? 's' : ''}`);
   };
 
-  // Keyboard shortcut listener for Delete / Backspace & Escape
+  // Comprehensive NLE Studio Keyboard Shortcuts System
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+      // Ignore if user is currently typing in an input or textarea
+      const target = e.target as HTMLElement;
+      if (['INPUT', 'TEXTAREA'].includes(target?.tagName) || target?.isContentEditable) {
         return;
       }
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClip && selectedClip.type === 'keep') {
+
+      // 1. MODAL TOGGLES & ESCAPE
+      if (e.key === 'Escape') {
+        if (isShortcutsOpen) {
+          setIsShortcutsOpen(false);
+        } else if (isProjectsModalOpen) {
+          setIsProjectsModalOpen(false);
+        } else if (isSettingsOpen) {
+          setIsSettingsOpen(false);
+        } else if (isEditPlanOpen) {
+          setIsEditPlanOpen(false);
+        } else if (selectedClip) {
+          setSelectedClip(null);
+        }
+        return;
+      }
+
+      if (e.key === '?' || (e.shiftKey && e.key === '/')) {
         e.preventDefault();
-        handleCutClip(selectedClip);
-      } else if (e.key === 'Escape' && selectedClip) {
-        setSelectedClip(null);
+        setIsShortcutsOpen((prev) => !prev);
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'p' && !e.ctrlKey && !e.metaKey) {
+        e.preventDefault();
+        setIsProjectsModalOpen((prev) => !prev);
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'e' && !e.ctrlKey && !e.metaKey) {
+        if (project) {
+          e.preventDefault();
+          setIsEditPlanOpen((prev) => !prev);
+        }
+        return;
+      }
+
+      // 2. PLAYBACK & SCRUBBING
+      if (e.code === 'Space') {
+        e.preventDefault();
+        videoPlayerRef.current?.togglePlay();
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        videoPlayerRef.current?.pause();
+        showToast('⏸ Paused');
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'j') {
+        e.preventDefault();
+        videoPlayerRef.current?.seekRelative(-2);
+        showToast('⏪ -2.0s');
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'l') {
+        e.preventDefault();
+        videoPlayerRef.current?.seekRelative(2);
+        showToast('⏩ +2.0s');
+        return;
+      }
+
+      if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        const delta = e.shiftKey ? -0.1 : -1.0;
+        videoPlayerRef.current?.seekRelative(delta);
+        return;
+      }
+
+      if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        const delta = e.shiftKey ? 0.1 : 1.0;
+        videoPlayerRef.current?.seekRelative(delta);
+        return;
+      }
+
+      if (e.key === 'Home' || e.key === '0') {
+        e.preventDefault();
+        videoPlayerRef.current?.seekTo(0);
+        showToast('⏮ Jumped to start');
+        return;
+      }
+
+      if (e.key === 'End') {
+        e.preventDefault();
+        videoPlayerRef.current?.seekTo(duration);
+        showToast('⏭ Jumped to end');
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'm') {
+        e.preventDefault();
+        videoPlayerRef.current?.toggleMute();
+        showToast('🔇 Toggled Mute');
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'f') {
+        e.preventDefault();
+        videoPlayerRef.current?.toggleFullscreen();
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'a') {
+        e.preventDefault();
+        setAutoSkipCuts((prev) => {
+          const next = !prev;
+          showToast(next ? '⚡ Smart Auto-Skip enabled' : '👁️ Original uncut mode');
+          return next;
+        });
+        return;
+      }
+
+      // 3. TAKE & SEGMENT NAVIGATION (ArrowUp / ArrowDown / [ / ])
+      if (project?.analysis?.keeps && project.analysis.keeps.length > 0) {
+        const keeps = project.analysis.keeps;
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const nextKeep = keeps.find((k) => k.start > currentTime + 0.3) || keeps[0];
+          if (nextKeep) {
+            setCurrentTime(nextKeep.start);
+            setSelectedClip({
+              id: `keep_${nextKeep.start}`,
+              type: 'keep',
+              start: nextKeep.start,
+              end: nextKeep.end,
+              duration: nextKeep.end - nextKeep.start,
+              text: nextKeep.text,
+            });
+            showToast(`Take: "${(nextKeep.text || '').slice(0, 32)}..."`);
+          }
+          return;
+        }
+
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prevKeeps = keeps.filter((k) => k.start < currentTime - 0.5);
+          const prevKeep = prevKeeps.length > 0 ? prevKeeps[prevKeeps.length - 1] : keeps[keeps.length - 1];
+          if (prevKeep) {
+            setCurrentTime(prevKeep.start);
+            setSelectedClip({
+              id: `keep_${prevKeep.start}`,
+              type: 'keep',
+              start: prevKeep.start,
+              end: prevKeep.end,
+              duration: prevKeep.end - prevKeep.start,
+              text: prevKeep.text,
+            });
+            showToast(`Take: "${(prevKeep.text || '').slice(0, 32)}..."`);
+          }
+          return;
+        }
+
+        if (e.key === '[') {
+          e.preventDefault();
+          if (selectedClip) {
+            setCurrentTime(selectedClip.start);
+          } else {
+            const currentKeep = keeps.find((k) => currentTime >= k.start && currentTime <= k.end);
+            if (currentKeep) setCurrentTime(currentKeep.start);
+          }
+          return;
+        }
+
+        if (e.key === ']') {
+          e.preventDefault();
+          if (selectedClip) {
+            setCurrentTime(selectedClip.end);
+          } else {
+            const currentKeep = keeps.find((k) => currentTime >= k.start && currentTime <= k.end);
+            if (currentKeep) setCurrentTime(currentKeep.end);
+          }
+          return;
+        }
+      }
+
+      // 4. CUTTING & RESTORING (C, X, Delete, Backspace, R)
+      if (e.key.toLowerCase() === 'c' || e.key.toLowerCase() === 'x') {
+        e.preventDefault();
+        if (selectedClip) {
+          if (selectedClip.type === 'keep') {
+            handleCutClip(selectedClip);
+          } else {
+            handleRestoreClip(selectedClip);
+          }
+        } else {
+          // Check if playhead is currently inside an active cut
+          const activeCut = cuts.find((c) => currentTime >= c.start && currentTime <= c.end);
+          if (activeCut) {
+            handleRestoreClip({
+              id: `cut_${activeCut.start}`,
+              type: 'cut',
+              start: activeCut.start,
+              end: activeCut.end,
+              duration: activeCut.end - activeCut.start,
+              text: activeCut.text,
+            });
+          } else if (project?.analysis?.keeps) {
+            const activeKeep = project.analysis.keeps.find((k) => currentTime >= k.start && currentTime <= k.end);
+            if (activeKeep) {
+              handleCutClip({
+                id: `keep_${activeKeep.start}`,
+                type: 'keep',
+                start: activeKeep.start,
+                end: activeKeep.end,
+                duration: activeKeep.end - activeKeep.start,
+                text: activeKeep.text,
+              });
+            }
+          }
+        }
+        return;
+      }
+
+      if (e.key === 'Delete' || e.key === 'Backspace') {
+        if (e.shiftKey) {
+          e.preventDefault();
+          handleCleanShortClips();
+          return;
+        }
+        if (selectedClip && selectedClip.type === 'keep') {
+          e.preventDefault();
+          handleCutClip(selectedClip);
+        } else {
+          const activeKeep = project?.analysis?.keeps?.find((k) => currentTime >= k.start && currentTime <= k.end);
+          if (activeKeep) {
+            e.preventDefault();
+            handleCutClip({
+              id: `keep_${activeKeep.start}`,
+              type: 'keep',
+              start: activeKeep.start,
+              end: activeKeep.end,
+              duration: activeKeep.end - activeKeep.start,
+              text: activeKeep.text,
+            });
+          }
+        }
+        return;
+      }
+
+      if (e.key.toLowerCase() === 'r') {
+        e.preventDefault();
+        if (selectedClip && selectedClip.type === 'cut') {
+          handleRestoreClip(selectedClip);
+        } else {
+          const activeCut = cuts.find((c) => currentTime >= c.start && currentTime <= c.end);
+          if (activeCut) {
+            handleRestoreClip({
+              id: `cut_${activeCut.start}`,
+              type: 'cut',
+              start: activeCut.start,
+              end: activeCut.end,
+              duration: activeCut.end - activeCut.start,
+              text: activeCut.text,
+            });
+          }
+        }
+        return;
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [selectedClip, cuts, project]);
+  }, [selectedClip, cuts, project, currentTime, duration, autoSkipCuts, isShortcutsOpen, isProjectsModalOpen, isSettingsOpen, isEditPlanOpen]);
 
   const handleExport = async () => {
     if (!project) return;
@@ -417,6 +680,7 @@ function App() {
           setCurrentView('studio');
         }}
         onOpenProjects={() => setIsProjectsModalOpen(true)}
+        onOpenShortcuts={() => setIsShortcutsOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenEditPlan={() => setIsEditPlanOpen(true)}
         onExport={handleExport}
@@ -428,8 +692,9 @@ function App() {
         <main className="main-layout">
           {/* Left Column: Video Player, Multi-Track Timeline, & Stats */}
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem' }}>
-            <div className="glass-panel" style={{ padding: '1.5rem' }}>
+            <div className="glass-panel" style={{ padding: '1.25rem' }}>
               <VideoPlayer
+                ref={videoPlayerRef}
                 src={project.video_url}
                 currentTime={currentTime}
                 duration={duration}
@@ -509,6 +774,14 @@ function App() {
           isOpen={isEditPlanOpen}
           onClose={() => setIsEditPlanOpen(false)}
           project={project}
+        />
+      )}
+
+      {/* Keyboard Shortcuts Modal */}
+      {isShortcutsOpen && (
+        <KeyboardShortcutsModal
+          isOpen={isShortcutsOpen}
+          onClose={() => setIsShortcutsOpen(false)}
         />
       )}
 
