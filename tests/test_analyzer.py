@@ -162,3 +162,59 @@ def test_analyze_with_llm_groq(mock_groq_class):
     assert res[0]["action"] == "cut"
     assert res[0]["reason"] == "false_start"
 
+
+def test_detect_repetition_with_lead_in_words():
+    """Verify that 'I made this' followed by 'then again I made this xyz' is detected as a repetition."""
+    segments = [
+        Segment(text="I made this", start=1.0, end=2.5),
+        Segment(text="then again I made this xyz for the demo", start=3.0, end=6.0),
+    ]
+    cuts = detect_repetition_candidates(segments)
+    assert len(cuts) >= 1
+    assert cuts[0].start == pytest.approx(1.0)
+    assert cuts[0].end == pytest.approx(2.5)
+    assert cuts[0].reason == CutReason.REPEATED_TAKE
+
+
+def test_detect_intra_segment_repetition():
+    """Verify repetition occurring inside a single segment is detected."""
+    segments = [
+        Segment(text="I made this then again I made this xyz", start=1.0, end=5.0),
+    ]
+    cuts = detect_repetition_candidates(segments)
+    assert len(cuts) == 1
+    assert cuts[0].reason == CutReason.REPEATED_TAKE
+    assert "i made this" in cuts[0].text.lower()
+
+
+def test_bridge_micro_gap_between_cuts():
+    """Verify micro-gaps (<=1.8s with <=3 words) between cuts are bridged."""
+    segments = [
+        Segment(text="First failed take", start=1.0, end=3.0),
+        Segment(text="um", start=3.5, end=4.0),
+        Segment(text="Dead air pause", start=4.5, end=6.5),
+    ]
+    transcription = TranscriptionResult(segments=segments, silences=[], duration=8.0, audio_path="audio.wav")
+    cuts = [
+        CutProposal(start=1.0, end=3.0, reason=CutReason.FALSE_START, explanation="Take 1", text="First failed take", confidence=0.9),
+        CutProposal(start=4.5, end=6.5, reason=CutReason.LONG_SILENCE, explanation="Silence", text="[silence]", confidence=0.9),
+    ]
+    merged = _merge_overlapping_cuts(cuts, transcription=transcription)
+    # The 1.5s gap between 3.0 and 4.5 contains only "um", so it should be bridged into 1 continuous cut
+    assert len(merged) == 1
+    assert merged[0].start == pytest.approx(1.0)
+    assert merged[0].end == pytest.approx(6.5)
+
+
+def test_preserve_valid_content():
+    """Verify normal complete sentences with pauses are not cut."""
+    from cutflow.analyzer import detect_abandoned_sentences
+    segments = [
+        Segment(text="We built this because", start=1.0, end=2.5),
+        Segment(text="it was an open source project.", start=3.0, end=5.0),
+    ]
+    cuts = detect_abandoned_sentences(segments)
+    # Neither segment should be cut because there is no meta-talk or retake
+    assert len(cuts) == 0
+
+
