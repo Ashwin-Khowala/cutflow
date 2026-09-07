@@ -1,0 +1,20 @@
+[project]
+name = "cutflow"
+version = "0.1.0"
+description = "AI-powered video prep tool — removes false starts, filler words, and dead air"
+requires-python = ">=3.11"
+dependencies = [
+    "moonshine-voice",
+    "google-genai",
+    "groq",
+    "fastapi",
+    "uvicorn",
+    "python-multipart",
+]
+
+[project.scripts]
+cutflow = "cutflow.cli:main"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
