@@ -226,7 +226,7 @@ function App() {
       .then((res) => res.json())
       .then((data) => {
         if (data.edit_plan) {
-          setProject((prev) => (prev ? { ...prev, edit_plan: data.edit_plan } : null));
+          setProject((prev: ProjectData | null) => (prev ? { ...prev, edit_plan: data.edit_plan } : null));
         }
       })
       .catch(console.error);

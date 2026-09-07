@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { EditPlan, ProjectData } from '../types';
+import type { EditPlan, ProjectData, CutProposal, TimelineEntry } from '../types';
 
 interface EditPlanViewerProps {
   isOpen: boolean;
@@ -31,7 +31,7 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
       cuts_count: project.analysis?.cuts?.length || 0,
       keeps_count: project.analysis?.keeps?.length || 0,
     },
-    timeline: (project.analysis?.cuts || []).map((c, i) => ({
+    timeline: (project.analysis?.cuts || []).map((c: CutProposal, i: number) => ({
       id: `cut_${i}`,
       start: c.start,
       end: c.end,
@@ -296,7 +296,7 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
                   No timeline entries compiled yet.
                 </div>
               ) : (
-                plan.timeline.map((entry, idx) => (
+                plan.timeline.map((entry: TimelineEntry, idx: number) => (
                   <div
                     key={entry.id || idx}
                     style={{
