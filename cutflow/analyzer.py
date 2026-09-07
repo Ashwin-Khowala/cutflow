@@ -227,8 +227,8 @@ def detect_filler_segments(
 
 def detect_long_silences(
     silences: list[SilenceRegion],
-    max_silence: float = 1.5,
-    keep_gap: float = 0.3,
+    max_silence: float = 1.8,
+    keep_gap: float = 0.35,
 ) -> list[CutProposal]:
     """
     Flag silences longer than max_silence seconds for cutting.
@@ -253,6 +253,14 @@ def detect_long_silences(
     return cuts
 
 
+COMMON_STOPWORDS = {
+    "a", "an", "the", "and", "or", "but", "in", "on", "at", "to", "for", "of", "with",
+    "is", "was", "are", "were", "it", "that", "this", "i", "you", "we", "he", "she",
+    "they", "my", "your", "so", "as", "be", "by", "do", "did", "have", "had", "has",
+    "if", "then", "like", "will", "would", "can", "could", "all"
+}
+
+
 def detect_repetition_candidates(
     segments: list[Segment],
     similarity_threshold: float = 0.55,
@@ -272,101 +280,108 @@ def detect_repetition_candidates(
 
     # 1. Intra-segment repetition detection
     for seg in segments:
-        clean_words = [re.sub(r"[^\w]", "", w).lower() for w in seg.text.split() if re.sub(r"[^\w]", "", w)]
+        raw_words = seg.text.split()
+        clean_words = [re.sub(r"[^\w]", "", w).lower() for w in raw_words if re.sub(r"[^\w]", "", w)]
         nw = len(clean_words)
-        if nw >= 4:
-            found_intra = False
-            for plen in range(min(5, nw // 2), 1, -1):
-                if found_intra:
-                    break
-                for i in range(nw - plen * 2 + 1):
-                    p1 = clean_words[i:i + plen]
-                    # Look ahead within next 7 words for repeated phrase
-                    for j in range(i + plen, min(i + plen + 8, nw - plen + 1)):
-                        p2 = clean_words[j:j + plen]
-                        if p1 == p2:
-                            # Found repeated phrase inside a single segment!
-                            # Cut the first attempt (from i to j - 1)
-                            if seg.words and len(seg.words) == nw:
-                                c_start = seg.words[i].start
-                                c_end = seg.words[j - 1].end
-                            else:
-                                c_start = seg.start + (i / nw) * (seg.end - seg.start)
-                                c_end = seg.start + (j / nw) * (seg.end - seg.start)
+        if nw < 4:
+            continue
 
-                            cut_text = " ".join(clean_words[i:j])
-                            cuts.append(CutProposal(
-                                start=c_start,
-                                end=c_end,
-                                reason=CutReason.REPEATED_TAKE,
-                                explanation=f"Intra-segment repetition: \"{cut_text}\" restarted as \"{' '.join(p2)}\"",
-                                text=cut_text,
-                                confidence=0.92,
-                            ))
-                            found_intra = True
-                            break
+        found_intra = False
+        for plen in range(min(5, nw // 2), 1, -1):
+            if found_intra:
+                break
+            for i in range(nw - plen * 2 + 1):
+                p1 = clean_words[i:i + plen]
 
-    # 2. Inter-segment repetition detection (sliding window up to 4 segments ahead)
+                # Ensure p1 contains at least one non-stopword or plen >= 3
+                if plen == 2 and all(w in COMMON_STOPWORDS for w in p1):
+                    continue
+
+                # Look ahead within next 4 words (typical connector length: "then again", "wait", etc.)
+                for j in range(i + plen, min(i + plen + 5, nw - plen + 1)):
+                    p2 = clean_words[j:j + plen]
+                    if p1 == p2:
+                        # Check for sentence-ending punctuation between i and j in raw words
+                        between_raw = " ".join(raw_words[i:j])
+                        if any(term in between_raw for term in [".", "!", "?", ";"]):
+                            # Crossed a sentence boundary — natural topic continuation, not a restart!
+                            continue
+
+                        # Found genuine repetition inside a single segment!
+                        if seg.words and len(seg.words) == nw:
+                            c_start = seg.words[i].start
+                            c_end = seg.words[j - 1].end
+                        else:
+                            c_start = seg.start + (i / nw) * (seg.end - seg.start)
+                            c_end = seg.start + (j / nw) * (seg.end - seg.start)
+
+                        cut_text = " ".join(raw_words[i:j])
+                        cuts.append(CutProposal(
+                            start=c_start,
+                            end=c_end,
+                            reason=CutReason.REPEATED_TAKE,
+                            explanation=f"Intra-segment repetition: \"{cut_text}\" restarted as \"{' '.join(p2)}\"",
+                            text=cut_text,
+                            confidence=0.92,
+                        ))
+                        found_intra = True
+                        break
+
+    # 2. Inter-segment repetition detection (look ahead up to 2 segments)
     for i in range(n - 1):
         s1 = segments[i]
-        words1 = [re.sub(r"[^\w]", "", w).lower() for w in s1.text.split() if re.sub(r"[^\w]", "", w)]
+        raw_w1 = s1.text.split()
+        words1 = [re.sub(r"[^\w]", "", w).lower() for w in raw_w1 if re.sub(r"[^\w]", "", w)]
         if not words1:
             continue
 
-        for j in range(i + 1, min(i + 5, n)):
+        has_terminal = s1.text.strip().endswith((".", "!", "?"))
+        len1 = len(words1)
+
+        for j in range(i + 1, min(i + 3, n)):
             s2 = segments[j]
             words2 = [re.sub(r"[^\w]", "", w).lower() for w in s2.text.split() if re.sub(r"[^\w]", "", w)]
             if not words2:
                 continue
 
-            # A. Test prefix match with sliding offset on words2 (handles "then again I made this xyz")
+            len2 = len(words2)
             is_match = False
             match_len = 0
 
-            max_offset = min(5, len(words2))
-            for offset in range(max_offset):
-                sub_w2 = words2[offset:]
-                curr_match = 0
-                for k in range(min(len(words1), len(sub_w2))):
-                    if words1[k] == sub_w2[k]:
-                        curr_match += 1
-                    else:
-                        break
+            # Find longest common contiguous word sequence between s1 and s2
+            m = difflib.SequenceMatcher(None, words1, words2).find_longest_match(0, len1, 0, len2)
 
-                if (curr_match >= 2 and curr_match / len(words1) >= 0.4) or curr_match >= 3:
+            # Match must start near the beginning of s2 (offset <= 3, allowing lead-ins like "then again", "so")
+            if m.size > 0 and m.b <= 3:
+                matched_words = words1[m.a:m.a + m.size]
+                has_substantive = any(w not in COMMON_STOPWORDS for w in matched_words)
+
+                # Short take: >= 2 words, covers >= 45% of s1, has substantive word, not a finished sentence
+                if len1 <= 4 and m.size >= 2 and (m.size / len1 >= 0.45) and has_substantive and not has_terminal:
                     is_match = True
-                    match_len = curr_match
-                    break
+                    match_len = m.size
+                # Medium/long take: >= 4 words or >= 35% of s1 with substantive content
+                elif len1 > 4 and (m.size >= 4 or (m.size >= 3 and m.size / len1 >= 0.35)) and has_substantive:
+                    is_match = True
+                    match_len = m.size
 
-            # B. Contiguous subphrase containment (words1 appears anywhere in words2)
-            if not is_match and len(words1) >= 2:
-                for k in range(len(words2) - len(words1) + 1):
-                    if words2[k:k + len(words1)] == words1:
-                        is_match = True
-                        match_len = len(words1)
-                        break
+            # Fuzzy sequence match if significant take overlap
+            if not is_match and not has_terminal:
+                clean_t1 = " ".join(words1)
+                clean_t2 = " ".join(words2[:len1 + 4])
+                ratio = difflib.SequenceMatcher(None, clean_t1, clean_t2).ratio()
+                if ratio >= 0.65:
+                    is_match = True
+                    match_len = len1
 
-            # C. Fuzzy sequence matching on cleaned texts
-            clean_t1 = " ".join(words1)
-            clean_t2 = " ".join(words2)
-            seq_ratio = difflib.SequenceMatcher(None, clean_t1, clean_t2).ratio()
-            if not is_match and seq_ratio >= similarity_threshold:
-                is_match = True
-                match_len = len(words1)
-
-            # D. Stumble restart (s1 has 1-3 words, followed by s2 containing those words)
-            is_stumble = len(words1) <= 3 and len(words2) >= 4 and any(w in words2[:4] for w in words1)
-
-            if is_match or is_stumble:
-                reason = CutReason.REPEATED_TAKE if (match_len >= 2 or seq_ratio >= 0.7) else CutReason.FALSE_START
-                conf = 0.95 if is_match else 0.85
+            if is_match:
                 cuts.append(CutProposal(
                     start=s1.start,
                     end=s1.end,
-                    reason=reason,
+                    reason=CutReason.REPEATED_TAKE,
                     explanation=f"Repeated take / restarted in take [{j}]: \"{s2.text[:45]}...\"",
                     text=s1.text,
-                    confidence=conf,
+                    confidence=0.95,
                 ))
                 break
 
@@ -563,6 +578,7 @@ def build_analysis_result(
 
         start = min(s.start for s in cut_segments)
         end = max(s.end for s in cut_segments)
+        duration = end - start
         text = " ".join(s.text for s in cut_segments)
 
         reason_str = item.get("reason", "false_start")
@@ -570,6 +586,18 @@ def build_analysis_result(
             reason = CutReason(reason_str)
         except ValueError:
             reason = CutReason.FALSE_START
+
+        # Safety Guard: If an LLM flags a long segment (> 6s or > 15 words) as stumble or filler,
+        # never discard the entire multi-sentence explanation if an algorithmic cut already pinpointed
+        # the exact sub-phrase stumble!
+        if duration > 6.0 and reason in (CutReason.STUMBLE, CutReason.FILLER_WORDS):
+            has_sub_cut = any(
+                c.start >= start - 0.5 and c.end <= end + 0.5
+                for c in all_cuts
+            )
+            if has_sub_cut:
+                # Keep surgical cut already found; preserve the rest of the good speech
+                continue
 
         all_cuts.append(CutProposal(
             start=start,
@@ -581,10 +609,10 @@ def build_analysis_result(
         ))
 
     # Sort cuts by start time and merge overlapping / micro-gaps
-    all_cuts.sort(key=lambda c: c.start)
-    merged_cuts = _merge_overlapping_cuts(all_cuts, transcription=transcription)
+    all_cuts.sort(key=lambda c: (c.start, c.end))
+    merged_cuts = _merge_overlapping_cuts(all_cuts, transcription=transcription, bridge_max_gap=2.5, bridge_max_words=5)
 
-    # Build keep regions (everything NOT cut)
+    # Build keep regions (strictly the gaps between merged cuts)
     keeps = _build_keep_regions(merged_cuts, transcription)
 
     # Calculate durations
@@ -617,49 +645,56 @@ def build_analysis_result(
 def _merge_overlapping_cuts(
     cuts: list[CutProposal],
     transcription: TranscriptionResult | None = None,
-    bridge_max_gap: float = 1.8,
-    bridge_max_words: int = 3,
+    bridge_max_gap: float = 2.5,
+    bridge_max_words: int = 5,
 ) -> list[CutProposal]:
     """
-    Merge overlapping cut regions and bridge micro-gaps.
-    If two cuts are separated by a small gap (<= 1.8s) containing only
-    a few words (<= 3 words) or silence/filler, they are merged together
-    to prevent leaving jarring 1-2 second orphan clips between cuts.
+    Merge overlapping cut regions and iteratively bridge micro-gaps.
+    Eliminates awkward 1-2 second island clips between cuts:
+    - Cascades iteratively until all close cuts are unified.
+    - Sub-second micro-gaps (<= 1.2s) with transcript are bridged (no video jump-cut blips).
+    - Gaps <= bridge_max_gap (2.5s) containing dead air or <= bridge_max_words are bridged.
     """
     if not cuts:
         return []
 
-    sorted_cuts = sorted(cuts, key=lambda c: (c.start, c.end))
-    merged = [sorted_cuts[0]]
+    merged = sorted(cuts, key=lambda c: (c.start, c.end))
 
-    for cut in sorted_cuts[1:]:
-        last = merged[-1]
-        gap = cut.start - last.end
+    # Iterative cascading merge until convergence
+    changed = True
+    while changed:
+        changed = False
+        new_merged = [merged[0]]
 
-        should_merge = False
-        if gap <= 0.35:
-            # Overlapping or virtually touching
-            should_merge = True
-        elif transcription is not None and gap <= bridge_max_gap:
-            # Micro-gap: inspect words in the gap using transcript data
-            text_between = _get_text_in_range(transcription.segments, last.end, cut.start).strip()
-            words_between = text_between.split()
+        for cut in merged[1:]:
+            last = new_merged[-1]
+            gap = cut.start - last.end
 
-            # Bridge if few words (stutter/hesitation) or very short dead gap
-            if len(words_between) <= bridge_max_words or gap <= 0.8:
+            should_merge = False
+            # 1. Overlapping or sub-second micro-gap (<= 0.8s): unconditionally bridge!
+            if gap <= 0.8:
                 should_merge = True
+            # 2. Short gap (<= bridge_max_gap): bridge if transcription shows few words or dead air
+            elif transcription is not None and gap <= bridge_max_gap:
+                text_between = _get_text_in_range(transcription.segments, last.end, cut.start).strip()
+                words_between = text_between.split()
+                if len(words_between) <= bridge_max_words or gap <= 1.8:
+                    should_merge = True
 
-        if should_merge:
-            merged[-1] = CutProposal(
-                start=last.start,
-                end=max(last.end, cut.end),
-                reason=last.reason if last.confidence >= cut.confidence else cut.reason,
-                explanation=f"{last.explanation}; {cut.explanation}",
-                text=f"{last.text} | {cut.text}",
-                confidence=max(last.confidence, cut.confidence),
-            )
-        else:
-            merged.append(cut)
+            if should_merge:
+                new_merged[-1] = CutProposal(
+                    start=last.start,
+                    end=max(last.end, cut.end),
+                    reason=last.reason if last.confidence >= cut.confidence else cut.reason,
+                    explanation=f"{last.explanation}; {cut.explanation}",
+                    text=f"{last.text} | {cut.text}",
+                    confidence=max(last.confidence, cut.confidence),
+                )
+                changed = True
+            else:
+                new_merged.append(cut)
+
+        merged = new_merged
 
     return merged
 
@@ -667,13 +702,10 @@ def _merge_overlapping_cuts(
 def _build_keep_regions(
     cuts: list[CutProposal],
     transcription: TranscriptionResult,
-    min_keep_duration: float = 0.75,
-    min_keep_words: int = 2,
 ) -> list[KeepRegion]:
     """
-    Build keep regions from the gaps between cuts.
-    Filters out microscopic keep flutter (duration < 0.75s and <= 1 word)
-    to keep playback smooth and eliminate visual jump-cut glitches.
+    Build keep regions strictly from the gaps between the final merged cuts.
+    Guarantees that visual keep slices and timeline cuts are 100% complementary.
     """
     keeps = []
     current_start = 0.0
@@ -683,28 +715,21 @@ def _build_keep_regions(
         gap_dur = cut.start - current_start
         if gap_dur > 0.05:
             text = _get_text_in_range(transcription.segments, current_start, cut.start).strip()
-            words_count = len(text.split())
-
-            # Only emit keep region if it has meaningful length or substantive words
-            if gap_dur >= min_keep_duration or words_count >= min_keep_words:
-                keeps.append(KeepRegion(
-                    start=current_start,
-                    end=cut.start,
-                    text=text,
-                ))
+            keeps.append(KeepRegion(
+                start=current_start,
+                end=cut.start,
+                text=text,
+            ))
         current_start = cut.end
 
     # Final keep region after last cut
     if current_start < total_duration - 0.05:
-        gap_dur = total_duration - current_start
         text = _get_text_in_range(transcription.segments, current_start, total_duration).strip()
-        words_count = len(text.split())
-        if gap_dur >= min_keep_duration or words_count >= min_keep_words:
-            keeps.append(KeepRegion(
-                start=current_start,
-                end=total_duration,
-                text=text,
-            ))
+        keeps.append(KeepRegion(
+            start=current_start,
+            end=total_duration,
+            text=text,
+        ))
 
     return keeps
 

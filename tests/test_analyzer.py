@@ -218,3 +218,48 @@ def test_preserve_valid_content():
     assert len(cuts) == 0
 
 
+def test_preserve_sentences_with_shared_subject():
+    """Verify that consecutive sentences sharing a subject across periods are NOT cut."""
+    segments = [
+        Segment(text="the AI can help resolve them. The AI guardrails are meant to not bombard the user", start=1.0, end=6.0),
+    ]
+    cuts = detect_repetition_candidates(segments)
+    assert len(cuts) == 0
+
+
+def test_preserve_completed_short_sentence():
+    """Verify short completed sentences like 'a message.' are not cut due to stopword matches."""
+    segments = [
+        Segment(text="I never wanted it to become something like if the payment fails, then immediately send", start=1.0, end=4.0),
+        Segment(text="a message.", start=4.0, end=5.0),
+        Segment(text="That's a very naive way of thinking.", start=5.0, end=8.0),
+    ]
+    cuts = detect_repetition_candidates(segments)
+    assert not any("message" in c.text for c in cuts)
+
+
+def test_sub_second_gap_island_elimination():
+    """Verify sub-second micro-gaps (e.g. 0.6s or 0.25s) between cuts are unconditionally merged into 1 continuous cut."""
+    cuts = [
+        CutProposal(start=10.0, end=14.0, reason=CutReason.LONG_SILENCE, explanation="Silence 1", text="[silence]", confidence=0.95),
+        CutProposal(start=14.6, end=18.0, reason=CutReason.FALSE_START, explanation="Restart", text="bad take", confidence=0.95),
+    ]
+    merged = _merge_overlapping_cuts(cuts)
+    assert len(merged) == 1
+    assert merged[0].start == pytest.approx(10.0)
+    assert merged[0].end == pytest.approx(18.0)
+
+
+def test_retake_detection_with_word_variation():
+    """Verify a retake with slight verbal variation ('I gave it also added' -> 'I also added') is detected."""
+    segments = [
+        Segment(text="I gave it also added the support for voice calls", start=1.0, end=4.0),
+        Segment(text="I also added the support for voice interactions which can communicate", start=4.5, end=8.0),
+    ]
+    cuts = detect_repetition_candidates(segments)
+    assert len(cuts) == 1
+    assert cuts[0].start == pytest.approx(1.0)
+    assert cuts[0].end == pytest.approx(4.0)
+
+
+

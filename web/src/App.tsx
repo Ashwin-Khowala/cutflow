@@ -225,7 +225,10 @@ function App() {
     })
       .then((res) => res.json())
       .then((data) => {
-        if (data.edit_plan) {
+        if (data.analysis && data.edit_plan) {
+          setProject((prev: ProjectData | null) => (prev ? { ...prev, analysis: data.analysis, edit_plan: data.edit_plan } : null));
+          setCuts(data.analysis.cuts || []);
+        } else if (data.edit_plan) {
           setProject((prev: ProjectData | null) => (prev ? { ...prev, edit_plan: data.edit_plan } : null));
         }
       })
