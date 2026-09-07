@@ -262,4 +262,67 @@ def test_retake_detection_with_word_variation():
     assert cuts[0].end == pytest.approx(4.0)
 
 
+def test_silence_cut_inside_segment_no_orphan_keep():
+    """
+    Regression: A silence cut that falls inside a long Whisper segment should not
+    create an orphan micro-keep sliver at the tail of that segment.
 
+    Real-world case: Whisper segment [13.76->21.20] contains the text
+    "So the system isn't optimizing for the messages sent."
+    A silence is detected at 18.28->20.98 (inside the segment).
+    An LLM/repetition cut for [0->13.76] follows.
+    Result: the gap 20.62->21.20 (0.58s) should NOT appear as a keep region.
+    """
+    segments = [
+        Segment(text="So, the system isn't optimizing for the messages sent.", start=0.0, end=13.76),
+        Segment(text="So the system isn't optimizing for the messages sent.", start=13.76, end=21.20),
+        Segment(text="It's optimizing for net expected revenue.", start=21.20, end=27.78),
+        Segment(text="It's optimizing for net expected revenue.", start=27.78, end=31.42),
+    ]
+    transcription = TranscriptionResult(segments=segments, silences=[], duration=34.33, audio_path="audio.wav")
+
+    # The silence cut lands inside segment[1]: 18.63 -> 20.62 is inside [13.76, 21.20]
+    silence_cut = CutProposal(start=18.63, end=20.62, reason=CutReason.LONG_SILENCE, explanation="Dead air", text="[silence]", confidence=0.95)
+    # The repetition cut covers segment[0] and segment[2]
+    retake_cut_1 = CutProposal(start=0.0, end=13.76, reason=CutReason.REPEATED_TAKE, explanation="Repeated take", text="...", confidence=0.98)
+    retake_cut_2 = CutProposal(start=21.20, end=27.78, reason=CutReason.REPEATED_TAKE, explanation="Repeated take", text="...", confidence=0.98)
+
+    merged = _merge_overlapping_cuts(
+        [retake_cut_1, silence_cut, retake_cut_2],
+        transcription=transcription
+    )
+
+    # Build keeps from merged cuts
+    from cutflow.analyzer import _build_keep_regions
+    keeps = _build_keep_regions(merged, transcription)
+
+    # There should be NO keep sliver of < 1s at 20.62->21.20
+    orphan_slivers = [k for k in keeps if (k.end - k.start) < 1.0 and k.start > 15.0 and k.end < 22.0]
+    assert len(orphan_slivers) == 0, f"Found orphan micro-sliver(s): {orphan_slivers}"
+
+    # The keep for the good "So the system..." take should be present
+    good_takes = [k for k in keeps if "So the system" in k.text or (k.start >= 13.76 and k.end <= 19.5)]
+    assert len(good_takes) >= 1
+
+
+def test_text_attribution_precision_with_overlap_check():
+    """
+    Regression: A short keep sliver inside a long Whisper segment should not inherit
+    the full text of that parent segment. Without word timestamps, the overlap ratio
+    check should prevent this.
+    """
+    from cutflow.analyzer import _get_text_in_range_precise
+
+    # A single long Whisper segment 0->12s
+    segments = [
+        Segment(text="It's optimizing for net expected revenue.", start=0.0, end=12.0, words=[]),
+    ]
+
+    # Ask for text in the tail sliver 11.5->12.0 (0.5s) — only 4% of the 12s segment
+    text = _get_text_in_range_precise(segments, 11.5, 12.0)
+    # Should return empty because 0.5/12 = 4% overlap which is below the 30% segment threshold
+    assert text == "", f"Expected empty text for micro-sliver, got: {repr(text)}"
+
+    # But for a query that covers most of the segment (e.g., 1.0->12.0)
+    text_full = _get_text_in_range_precise(segments, 1.0, 12.0)
+    assert "optimizing" in text_full

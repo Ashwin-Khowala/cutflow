@@ -652,7 +652,9 @@ def _merge_overlapping_cuts(
     Merge overlapping cut regions and iteratively bridge micro-gaps.
     Eliminates awkward 1-2 second island clips between cuts:
     - Cascades iteratively until all close cuts are unified.
-    - Sub-second micro-gaps (<= 1.2s) with transcript are bridged (no video jump-cut blips).
+    - Sub-second micro-gaps (<= 0.8s): unconditionally bridged.
+    - Gaps entirely inside a single Whisper segment and <= 1.5s: bridged (these are
+      silence-boundary artefacts, not real speech islands).
     - Gaps <= bridge_max_gap (2.5s) containing dead air or <= bridge_max_words are bridged.
     """
     if not cuts:
@@ -674,8 +676,26 @@ def _merge_overlapping_cuts(
             # 1. Overlapping or sub-second micro-gap (<= 0.8s): unconditionally bridge!
             if gap <= 0.8:
                 should_merge = True
-            # 2. Short gap (<= bridge_max_gap): bridge if transcription shows few words or dead air
-            elif transcription is not None and gap <= bridge_max_gap:
+
+            if not should_merge and transcription is not None and gap <= 1.5:
+                # 2. Gap falls entirely within a single Whisper segment boundary
+                # (silence cuts can create orphan tails inside a segment — not real speech)
+                for seg in transcription.segments:
+                    if seg.start <= last.end and seg.end >= cut.start:
+                        # The entire gap [last.end, cut.start] is inside this one segment
+                        # Check word-level evidence: any words with timestamps in the gap?
+                        words_in_gap = [
+                            w for w in (seg.words or [])
+                            if w.start >= last.end - 0.05 and w.end <= cut.start + 0.05
+                        ]
+                        if not words_in_gap:
+                            # No word-level evidence of speech in the gap → it's an artefact
+                            should_merge = True
+                        break
+
+            # 3. Short gap (<= bridge_max_gap): bridge if transcription shows few words or dead air
+            # (runs regardless of rule 2 — acts as fallback for cases where no single segment spans the gap)
+            if not should_merge and transcription is not None and gap <= bridge_max_gap:
                 text_between = _get_text_in_range(transcription.segments, last.end, cut.start).strip()
                 words_between = text_between.split()
                 if len(words_between) <= bridge_max_words or gap <= 1.8:
@@ -702,10 +722,13 @@ def _merge_overlapping_cuts(
 def _build_keep_regions(
     cuts: list[CutProposal],
     transcription: TranscriptionResult,
+    min_keep_duration: float = 0.3,
 ) -> list[KeepRegion]:
     """
     Build keep regions strictly from the gaps between the final merged cuts.
     Guarantees that visual keep slices and timeline cuts are 100% complementary.
+    Filters out orphan keep slivers shorter than min_keep_duration (< 0.3s) which
+    are always silence-boundary rounding artefacts, never real speech.
     """
     keeps = []
     current_start = 0.0
@@ -713,18 +736,22 @@ def _build_keep_regions(
 
     for cut in cuts:
         gap_dur = cut.start - current_start
-        if gap_dur > 0.05:
-            text = _get_text_in_range(transcription.segments, current_start, cut.start).strip()
+        if gap_dur > min_keep_duration:
+            text = _get_text_in_range_precise(transcription.segments, current_start, cut.start).strip()
             keeps.append(KeepRegion(
                 start=current_start,
                 end=cut.start,
                 text=text,
             ))
+        elif gap_dur > 0.05:
+            # Orphan sliver < min_keep_duration — extend the current cut to absorb it
+            # by pushing current_start forward (let the cut win)
+            pass  # don't emit a keep; the sliver vanishes into the surrounding cut
         current_start = cut.end
 
     # Final keep region after last cut
-    if current_start < total_duration - 0.05:
-        text = _get_text_in_range(transcription.segments, current_start, total_duration).strip()
+    if current_start < total_duration - min_keep_duration:
+        text = _get_text_in_range_precise(transcription.segments, current_start, total_duration).strip()
         keeps.append(KeepRegion(
             start=current_start,
             end=total_duration,
@@ -734,14 +761,45 @@ def _build_keep_regions(
     return keeps
 
 
-def _get_text_in_range(segments: list[Segment], start: float, end: float) -> str:
-    """Get concatenated text from segments that fall within a time range."""
+def _get_text_in_range_precise(segments: list[Segment], start: float, end: float) -> str:
+    """
+    Get text from segments that fall within a time range.
+    When word-level timestamps are available, only includes words that actually
+    fall within the range rather than the entire parent segment text.
+    This prevents long Whisper segments that span a silence cut from leaking
+    their full text into a tiny tail keep region.
+    """
     texts = []
     for seg in segments:
-        # Segment overlaps with our range
-        if seg.end > start and seg.start < end:
-            texts.append(seg.text.strip())
+        if seg.end <= start or seg.start >= end:
+            continue  # no overlap at all
+
+        if seg.words:
+            # Use word-level timestamps for precise attribution
+            word_texts = [
+                w.text for w in seg.words
+                if w.start >= start - 0.1 and w.end <= end + 0.1
+            ]
+            if word_texts:
+                texts.append(" ".join(word_texts).strip())
+            # else: no words actually fall in this range — skip the segment text
+        else:
+            # No word timestamps: fall back to including the segment if it substantially overlaps
+            overlap = min(seg.end, end) - max(seg.start, start)
+            seg_duration = max(0.01, seg.end - seg.start)
+            range_duration = max(0.01, end - start)
+            # The segment must contribute >= 30% of itself into this range,
+            # OR the range must be at least 80% as long as the segment (i.e., the range contains most of it).
+            # This prevents a 12s Whisper segment from having its full text assigned to a 0.5s tail sliver.
+            if overlap / seg_duration >= 0.3 or range_duration / seg_duration >= 0.8:
+                texts.append(seg.text.strip())
+
     return " ".join(texts) if texts else ""
+
+
+def _get_text_in_range(segments: list[Segment], start: float, end: float) -> str:
+    """Legacy alias — uses the precise implementation."""
+    return _get_text_in_range_precise(segments, start, end)
 
 
 def _format_time(seconds: float) -> str:
