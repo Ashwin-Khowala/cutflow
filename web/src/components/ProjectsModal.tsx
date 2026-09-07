@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import { X, Folder, Clock, Scissors, Sparkles, Trash2, ArrowRight, Video, RefreshCw, CheckCircle2 } from 'lucide-react';
 import type { ProjectSummary } from '../types';
 
+import { getProjects, deleteProject } from '../api/client';
+
 interface ProjectsModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -22,11 +24,8 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
   const fetchProjects = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/projects');
-      if (res.ok) {
-        const data = await res.json();
-        setProjects(data);
-      }
+      const data = await getProjects();
+      setProjects(data);
     } catch (err) {
       console.error('Failed to load projects:', err);
     } finally {
@@ -47,10 +46,8 @@ export const ProjectsModal: React.FC<ProjectsModalProps> = ({
     }
     setDeletingId(id);
     try {
-      const res = await fetch(`/api/projects/${id}`, { method: 'DELETE' });
-      if (res.ok) {
-        setProjects((prev) => prev.filter((p) => p.id !== id));
-      }
+      await deleteProject(id);
+      setProjects((prev) => prev.filter((p) => p.id !== id));
     } catch (err) {
       console.error('Delete project failed:', err);
     } finally {

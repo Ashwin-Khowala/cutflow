@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { X, Key, Sliders, Clock, ExternalLink, Cpu, Sparkles } from 'lucide-react';
 import type { Settings } from '../types';
+import { cleanupStorage } from '../api/client';
 
 interface SettingsModalProps {
   settings: Settings;
@@ -367,8 +368,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 btn.disabled = true;
                 btn.innerText = 'Cleaning...';
                 try {
-                  const res = await fetch('/api/storage/cleanup', { method: 'POST' });
-                  const data = await res.json();
+                  const data = await cleanupStorage();
                   alert(`Storage cleaned! Current storage: ${data.stats.total_mb} MB (${data.stats.upload_count} files)`);
                 } catch {
                   alert('Storage cleanup completed.');

@@ -13,9 +13,15 @@ import { EditPlanViewer } from './components/EditPlanViewer';
 import { ProjectsModal } from './components/ProjectsModal';
 import { KeyboardShortcutsModal } from './components/KeyboardShortcutsModal';
 import type { ProjectData, CutProposal, Settings, SelectedClip } from './types';
+import {
+  uploadVideo,
+  createProject,
+  getProjectStatus,
+  getProject,
+  updateProjectCuts,
+  renderProjectVideo,
+} from './api/client';
 import './App.css';
-
-const API_BASE = import.meta.env.VITE_API_URL || '';
 
 function App() {
   const [currentView, setCurrentView] = useState<'landing' | 'studio'>('landing');
@@ -78,41 +84,15 @@ function App() {
       stageIndex: 1,
     });
 
-    const formData = new FormData();
-    formData.append('file', file);
-
     try {
-      // Use XMLHttpRequest for real-time progress events
-      const uploadData: any = await new Promise((resolve, reject) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `${API_BASE}/api/upload`);
-
-        xhr.upload.onprogress = (e) => {
-          if (e.lengthComputable) {
-            const percent = Math.round((e.loaded / e.total) * 100);
-            setProcessingState((prev) => ({
-              ...prev,
-              progress: percent,
-              message: `Uploading ${file.name} (${percent}%)...`,
-              stageIndex: 1,
-            }));
-          }
-        };
-
-        xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) {
-            try {
-              resolve(JSON.parse(xhr.responseText));
-            } catch {
-              reject(new Error('Invalid upload response'));
-            }
-          } else {
-            reject(new Error(`Upload failed with status ${xhr.status}`));
-          }
-        };
-
-        xhr.onerror = () => reject(new Error('Network error during upload'));
-        xhr.send(formData);
+      // Use uploadVideo client helper with live progress events
+      const uploadData = await uploadVideo(file, (percent) => {
+        setProcessingState((prev) => ({
+          ...prev,
+          progress: percent,
+          message: `Uploading ${file.name} (${percent}%)...`,
+          stageIndex: 1,
+        }));
       });
 
       const activeApiKey = settings.provider === 'groq' ? settings.groqApiKey : settings.geminiApiKey;
@@ -126,25 +106,16 @@ function App() {
         stageIndex: 1,
       });
 
-      const processRes = await fetch(`${API_BASE}/api/projects`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          video_filename: uploadData.video_filename,
-          api_key: activeApiKey || null,
-          groq_api_key: settings.groqApiKey || null,
-          provider: settings.provider,
-          model: settings.model,
-          silence_threshold: settings.silenceThreshold,
-          max_silence: settings.maxSilence,
-        }),
+      const processData = await createProject({
+        video_filename: uploadData.video_filename,
+        api_key: activeApiKey || null,
+        groq_api_key: settings.groqApiKey || null,
+        provider: settings.provider,
+        model: settings.model,
+        silence_threshold: settings.silenceThreshold,
+        max_silence: settings.maxSilence,
       });
 
-      if (!processRes.ok) {
-        throw new Error('Processing job start failed');
-      }
-
-      const processData = await processRes.json();
       pollProjectStatus(processData.project_id);
     } catch (err: any) {
       alert(`Error: ${err.message}`);
@@ -155,8 +126,7 @@ function App() {
   const pollProjectStatus = (projectId: string) => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/projects/${projectId}/status`);
-        const data = await res.json();
+        const data = await getProjectStatus(projectId);
 
         setProcessingState((prev) => ({
           ...prev,
@@ -182,11 +152,10 @@ function App() {
 
   const loadProject = async (projectId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/projects/${projectId}`);
-      const data: ProjectData = await res.json();
+      const data = await getProject(projectId);
       setProject(data);
-      setCuts(data.analysis.cuts || []);
-      setDuration(data.transcript.duration || 0);
+      setCuts(data.analysis?.cuts || []);
+      setDuration(data.transcript?.duration || 0);
       setCurrentTime(0);
     } catch (err: any) {
       alert(`Failed to load project: ${err.message}`);
@@ -204,14 +173,7 @@ function App() {
     if (!project) return;
     setCuts(updatedCuts);
 
-    fetch(`${API_BASE}/api/projects/${project.id}/cuts`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        cuts: updatedCuts.map((c) => ({ ...c, action: 'cut' })),
-      }),
-    })
-      .then((res) => res.json())
+    updateProjectCuts(project.id, updatedCuts)
       .then((data) => {
         if (data.analysis && data.edit_plan) {
           setProject((prev: ProjectData | null) => (prev ? { ...prev, analysis: data.analysis, edit_plan: data.edit_plan } : null));
@@ -602,15 +564,7 @@ function App() {
     });
 
     try {
-      const res = await fetch(`${API_BASE}/api/projects/${project.id}/render`, {
-        method: 'POST',
-      });
-
-      if (!res.ok) {
-        throw new Error('Render request failed');
-      }
-
-      const data = await res.json();
+      const data = await renderProjectVideo(project.id);
       setProcessingState({ isOpen: false, title: '', message: '' });
       setIsRendering(false);
 

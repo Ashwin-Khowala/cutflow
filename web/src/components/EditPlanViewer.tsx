@@ -1,5 +1,19 @@
 import React, { useState } from 'react';
 import type { EditPlan, ProjectData, CutProposal, TimelineEntry } from '../types';
+import { getExportEdlUrl } from '../api/client';
+
+interface DiffEvent {
+  id: string;
+  type: 'keep' | 'cut';
+  start: number;
+  end: number;
+  duration: number;
+  text?: string;
+  reason?: string;
+  explanation?: string;
+  cleanStart?: number;
+  cleanEnd?: number;
+}
 
 interface EditPlanViewerProps {
   isOpen: boolean;
@@ -12,7 +26,7 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
   onClose,
   project,
 }) => {
-  const [activeTab, setActiveTab] = useState<'json' | 'timeline' | 'edl'>('json');
+  const [activeTab, setActiveTab] = useState<'diff' | 'timeline' | 'json'>('diff');
   const [copied, setCopied] = useState(false);
 
   if (!isOpen) return null;
@@ -50,6 +64,39 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
 
   const jsonString = JSON.stringify(plan, null, 2);
 
+  // Compile chronological Diff events (Original Timeline vs Clean Cut)
+  let cumulativeClean = 0;
+  const rawKeeps: DiffEvent[] = (project.analysis?.keeps || []).map((k: any, i: number) => ({
+    id: `keep_${i}`,
+    type: 'keep',
+    start: k.start,
+    end: k.end,
+    duration: k.end - k.start,
+    text: k.text,
+  }));
+
+  const rawCuts: DiffEvent[] = (project.analysis?.cuts || []).map((c: any, i: number) => ({
+    id: `cut_${i}`,
+    type: 'cut',
+    start: c.start,
+    end: c.end,
+    duration: c.end - c.start,
+    text: c.text,
+    reason: c.reason,
+    explanation: c.explanation,
+  }));
+
+  const sortedEvents = [...rawKeeps, ...rawCuts].sort((a, b) => a.start - b.start);
+  const diffEvents: DiffEvent[] = sortedEvents.map((ev) => {
+    if (ev.type === 'keep') {
+      const cleanStart = cumulativeClean;
+      const cleanEnd = cumulativeClean + ev.duration;
+      cumulativeClean += ev.duration;
+      return { ...ev, cleanStart, cleanEnd };
+    }
+    return ev;
+  });
+
   const handleCopy = () => {
     navigator.clipboard.writeText(jsonString);
     setCopied(true);
@@ -68,7 +115,8 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
 
   const handleDownloadEdl = async () => {
     try {
-      const res = await fetch(`/api/projects/${project.id}/export/edl`);
+      const edlUrl = getExportEdlUrl(project.id);
+      const res = await fetch(edlUrl);
       if (!res.ok) throw new Error('EDL generation failed');
       const text = await res.text();
       const blob = new Blob([text], { type: 'text/plain' });
@@ -89,9 +137,9 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
         className="modal-card edit-plan-modal"
         onClick={(e) => e.stopPropagation()}
         style={{
-          width: '90%',
-          maxWidth: '860px',
-          maxHeight: '85vh',
+          width: '92%',
+          maxWidth: '960px',
+          maxHeight: '88vh',
           display: 'flex',
           flexDirection: 'column',
           background: '#0d1117',
@@ -121,10 +169,10 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
             </div>
             <div>
               <h3 style={{ margin: 0, fontSize: '1.15rem', color: '#f8fafc', fontWeight: 600 }}>
-                CutFlow Edit Plan (IR)
+                CutFlow Edit Plan & Diff Inspector
               </h3>
               <p style={{ margin: 0, fontSize: '0.8rem', color: '#94a3b8' }}>
-                Open intermediate representation format • Version {plan.version}
+                Universal Intermediate Representation IR • Version {plan.version}
               </p>
             </div>
           </div>
@@ -165,9 +213,9 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
             </div>
           </div>
           <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
-            <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase' }}>Time Saved</div>
+            <div style={{ fontSize: '0.7rem', color: '#64748b', textTransform: 'uppercase' }}>Time Saved (Delta)</div>
             <div style={{ fontSize: '1.1rem', fontWeight: 600, color: '#6366f1', fontFamily: 'JetBrains Mono, monospace' }}>
-              {plan.stats.time_saved.toFixed(1)}s ({plan.stats.savings_percent.toFixed(0)}%)
+              -{plan.stats.time_saved.toFixed(1)}s ({plan.stats.savings_percent.toFixed(0)}%)
             </div>
           </div>
           <div style={{ background: 'rgba(255,255,255,0.03)', padding: '0.75rem', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
@@ -182,19 +230,19 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.75rem' }}>
           <div style={{ display: 'flex', gap: '0.5rem' }}>
             <button
-              onClick={() => setActiveTab('json')}
+              onClick={() => setActiveTab('diff')}
               style={{
-                background: activeTab === 'json' ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
-                border: activeTab === 'json' ? '1px solid #6366f1' : '1px solid transparent',
-                color: activeTab === 'json' ? '#a5b4fc' : '#94a3b8',
+                background: activeTab === 'diff' ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
+                border: activeTab === 'diff' ? '1px solid #6366f1' : '1px solid transparent',
+                color: activeTab === 'diff' ? '#a5b4fc' : '#94a3b8',
                 borderRadius: '6px',
                 padding: '6px 12px',
                 fontSize: '0.8rem',
                 cursor: 'pointer',
-                fontWeight: 500,
+                fontWeight: 600,
               }}
             >
-              JSON Schema
+              ⚡ Diff Inspector ({diffEvents.length} events)
             </button>
             <button
               onClick={() => setActiveTab('timeline')}
@@ -209,7 +257,22 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
                 fontWeight: 500,
               }}
             >
-              Timeline Entries ({plan.timeline.length})
+              Timeline Slices ({plan.timeline.length})
+            </button>
+            <button
+              onClick={() => setActiveTab('json')}
+              style={{
+                background: activeTab === 'json' ? 'rgba(99, 102, 241, 0.2)' : 'transparent',
+                border: activeTab === 'json' ? '1px solid #6366f1' : '1px solid transparent',
+                color: activeTab === 'json' ? '#a5b4fc' : '#94a3b8',
+                borderRadius: '6px',
+                padding: '6px 12px',
+                fontSize: '0.8rem',
+                cursor: 'pointer',
+                fontWeight: 500,
+              }}
+            >
+              JSON Schema
             </button>
           </div>
 
@@ -273,6 +336,215 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
             padding: '1rem',
           }}
         >
+          {activeTab === 'diff' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              {/* Dual Track Visual Comparison */}
+              <div
+                style={{
+                  background: 'rgba(255, 255, 255, 0.02)',
+                  border: '1px solid rgba(255, 255, 255, 0.06)',
+                  borderRadius: '10px',
+                  padding: '1rem',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.6rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Visual Timeline Diff (Before vs After)
+                  </span>
+                  <span style={{ fontSize: '0.75rem', fontFamily: 'JetBrains Mono, monospace', color: '#a5b4fc' }}>
+                    {plan.stats.original_duration.toFixed(1)}s raw ➔ {plan.stats.clean_duration.toFixed(1)}s clean (-{plan.stats.time_saved.toFixed(1)}s)
+                  </span>
+                </div>
+
+                {/* Original Timeline Track */}
+                <div style={{ marginBottom: '0.6rem' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#64748b', marginBottom: '0.2rem' }}>
+                    <span>Original Footage (All Takes + Dead Air)</span>
+                    <span style={{ fontFamily: 'JetBrains Mono' }}>{plan.stats.original_duration.toFixed(1)}s</span>
+                  </div>
+                  <div
+                    style={{
+                      height: '16px',
+                      background: '#090d16',
+                      borderRadius: '4px',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      border: '1px solid rgba(255, 255, 255, 0.08)',
+                    }}
+                  >
+                    {diffEvents.map((ev) => {
+                      const totalDur = Math.max(0.1, plan.stats.original_duration);
+                      const widthPct = Math.max(0.5, (ev.duration / totalDur) * 100);
+                      return (
+                        <div
+                          key={`orig_${ev.id}`}
+                          title={`${ev.type.toUpperCase()}: ${ev.start.toFixed(2)}s - ${ev.end.toFixed(2)}s (${ev.duration.toFixed(2)}s) ${ev.text || ''}`}
+                          style={{
+                            width: `${widthPct}%`,
+                            height: '100%',
+                            background: ev.type === 'keep' ? '#10b981' : '#f43f5e',
+                            opacity: ev.type === 'keep' ? 0.85 : 0.65,
+                            borderRight: '1px solid rgba(0,0,0,0.4)',
+                          }}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Clean Output Track */}
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.68rem', color: '#64748b', marginBottom: '0.2rem' }}>
+                    <span style={{ color: '#34d399', fontWeight: 600 }}>Final Rendered Clean Video (Gapless)</span>
+                    <span style={{ fontFamily: 'JetBrains Mono', color: '#34d399' }}>{plan.stats.clean_duration.toFixed(1)}s</span>
+                  </div>
+                  <div
+                    style={{
+                      height: '16px',
+                      background: '#090d16',
+                      borderRadius: '4px',
+                      overflow: 'hidden',
+                      display: 'flex',
+                      border: '1px solid rgba(16, 185, 129, 0.3)',
+                    }}
+                  >
+                    {diffEvents
+                      .filter((ev) => ev.type === 'keep')
+                      .map((ev) => {
+                        const totalClean = Math.max(0.1, plan.stats.clean_duration);
+                        const widthPct = Math.max(0.5, (ev.duration / totalClean) * 100);
+                        return (
+                          <div
+                            key={`clean_${ev.id}`}
+                            title={`KEEP: ${ev.start.toFixed(2)}s - ${ev.end.toFixed(2)}s ➔ Output ${ev.cleanStart?.toFixed(2)}s - ${ev.cleanEnd?.toFixed(2)}s`}
+                            style={{
+                              width: `${widthPct}%`,
+                              height: '100%',
+                              background: '#10b981',
+                              opacity: 0.9,
+                              borderRight: '1px solid rgba(0,0,0,0.3)',
+                            }}
+                          />
+                        );
+                      })}
+                  </div>
+                </div>
+              </div>
+
+              {/* Sequential Diff Event Log */}
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '0 0.25rem' }}>
+                  <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
+                    Chronological Diff Log ({diffEvents.length} edits)
+                  </span>
+                  <div style={{ display: 'flex', gap: '1rem', fontSize: '0.72rem' }}>
+                    <span style={{ color: '#34d399' }}>+ {plan.stats.keeps_count} Keeps</span>
+                    <span style={{ color: '#fb7185' }}>- {plan.stats.cuts_count} Cuts</span>
+                  </div>
+                </div>
+
+                {diffEvents.length === 0 ? (
+                  <div style={{ textAlign: 'center', color: '#64748b', padding: '2rem' }}>
+                    No diff events found.
+                  </div>
+                ) : (
+                  diffEvents.map((ev, idx) => (
+                    <div
+                      key={ev.id || idx}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'space-between',
+                        background: ev.type === 'keep' ? 'rgba(16, 185, 129, 0.04)' : 'rgba(244, 63, 94, 0.05)',
+                        border: '1px solid rgba(255, 255, 255, 0.05)',
+                        borderLeft: ev.type === 'keep' ? '4px solid #10b981' : '4px solid #f43f5e',
+                        borderRadius: '6px',
+                        padding: '0.65rem 0.85rem',
+                        gap: '1rem',
+                      }}
+                    >
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', minWidth: '180px' }}>
+                        <span style={{ fontSize: '0.68rem', fontFamily: 'JetBrains Mono', color: '#64748b' }}>
+                          #{idx + 1}
+                        </span>
+                        <span
+                          style={{
+                            fontSize: '0.7rem',
+                            fontWeight: 700,
+                            padding: '2px 6px',
+                            borderRadius: '4px',
+                            background: ev.type === 'keep' ? 'rgba(16, 185, 129, 0.2)' : 'rgba(244, 63, 94, 0.2)',
+                            color: ev.type === 'keep' ? '#34d399' : '#fb7185',
+                            fontFamily: 'JetBrains Mono',
+                          }}
+                        >
+                          {ev.type === 'keep' ? '+ KEEP' : '- CUT'}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: 'JetBrains Mono',
+                            fontSize: '0.72rem',
+                            color: ev.type === 'keep' ? '#a7f3d0' : '#fca5a5',
+                            fontWeight: 600,
+                          }}
+                        >
+                          {ev.type === 'keep' ? `+${ev.duration.toFixed(2)}s` : `-${ev.duration.toFixed(2)}s`}
+                        </span>
+                      </div>
+
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div
+                          style={{
+                            fontSize: '0.82rem',
+                            color: ev.type === 'keep' ? '#f1f5f9' : '#fca5a5',
+                            textDecoration: ev.type === 'cut' ? 'line-through' : 'none',
+                            opacity: ev.type === 'cut' ? 0.75 : 1,
+                            overflow: 'hidden',
+                            textOverflow: 'ellipsis',
+                            whiteSpace: 'nowrap',
+                          }}
+                        >
+                          {ev.text || (ev.reason ? `[${ev.reason}]` : '[Dead Air / Silence]')}
+                        </div>
+                        {ev.explanation && (
+                          <div style={{ fontSize: '0.7rem', color: '#94a3b8', marginTop: '0.15rem', fontStyle: 'italic' }}>
+                            💡 {ev.explanation}
+                          </div>
+                        )}
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexShrink: 0 }}>
+                        {ev.reason && (
+                          <span
+                            style={{
+                              fontSize: '0.68rem',
+                              padding: '2px 6px',
+                              borderRadius: '4px',
+                              background: 'rgba(245, 158, 11, 0.1)',
+                              color: '#fbbf24',
+                              border: '1px solid rgba(245, 158, 11, 0.2)',
+                            }}
+                          >
+                            {ev.reason}
+                          </span>
+                        )}
+                        <span
+                          style={{
+                            fontFamily: 'JetBrains Mono',
+                            fontSize: '0.72rem',
+                            color: '#94a3b8',
+                          }}
+                        >
+                          {ev.start.toFixed(2)}s → {ev.end.toFixed(2)}s
+                        </span>
+                      </div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
           {activeTab === 'json' && (
             <pre
               style={{
