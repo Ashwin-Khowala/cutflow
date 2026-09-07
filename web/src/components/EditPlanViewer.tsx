@@ -68,7 +68,7 @@ export const EditPlanViewer: React.FC<EditPlanViewerProps> = ({
 
   const handleDownloadEdl = async () => {
     try {
-      const res = await fetch(`/api/project/${project.id}/export/edl`);
+      const res = await fetch(`/api/projects/${project.id}/export/edl`);
       if (!res.ok) throw new Error('EDL generation failed');
       const text = await res.text();
       const blob = new Blob([text], { type: 'text/plain' });

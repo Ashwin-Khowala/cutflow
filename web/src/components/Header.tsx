@@ -1,9 +1,10 @@
 import React from 'react';
-import { Film, Settings as SettingsIcon, Plus, Download, Sparkles, FileCode, Home } from 'lucide-react';
+import { Film, Settings as SettingsIcon, Plus, Download, Sparkles, FileCode, Home, Folder } from 'lucide-react';
 
 interface HeaderProps {
   onHomeClick?: () => void;
   onNewProject: () => void;
+  onOpenProjects?: () => void;
   onOpenSettings: () => void;
   onOpenEditPlan?: () => void;
   onExport: () => void;
@@ -16,6 +17,7 @@ interface HeaderProps {
 export const Header: React.FC<HeaderProps> = ({
   onHomeClick,
   onNewProject,
+  onOpenProjects,
   onOpenSettings,
   onOpenEditPlan,
   onExport,
@@ -85,6 +87,13 @@ export const Header: React.FC<HeaderProps> = ({
           >
             <FileCode size={15} />
             <span>Edit Plan IR</span>
+          </button>
+        )}
+
+        {onOpenProjects && (
+          <button className="btn btn-outline" onClick={onOpenProjects} title="Open Projects Manager" style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
+            <Folder size={15} />
+            <span>Projects</span>
           </button>
         )}
 

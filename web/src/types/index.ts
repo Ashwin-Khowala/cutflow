@@ -95,11 +95,32 @@ export interface EditPlan {
   metadata: Record<string, any>;
 }
 
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  video_filename: string;
+  video_url: string;
+  created_at: string;
+  updated_at: string;
+  status: string;
+  duration: number;
+  cuts_count: number;
+  keeps_count: number;
+  time_saved: number;
+  savings_percent: number;
+  rendered: boolean;
+  rendered_url?: string | null;
+  provider?: string;
+  model?: string;
+}
+
 export interface ProjectData {
   id: string;
+  name?: string;
   video_filename: string;
   video_url: string;
   rendered_url?: string | null;
+  metadata?: ProjectSummary;
   transcript: Transcript;
   analysis: Analysis;
   edit_plan?: EditPlan | null;

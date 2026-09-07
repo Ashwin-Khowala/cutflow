@@ -10,6 +10,7 @@ import { SelectedClipBar } from './components/SelectedClipBar';
 import { SettingsModal } from './components/SettingsModal';
 import { ProcessingModal } from './components/ProcessingModal';
 import { EditPlanViewer } from './components/EditPlanViewer';
+import { ProjectsModal } from './components/ProjectsModal';
 import type { ProjectData, CutProposal, Settings, SelectedClip } from './types';
 import './App.css';
 
@@ -26,6 +27,7 @@ function App() {
   const [autoSkipCuts, setAutoSkipCuts] = useState<boolean>(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
   const [isEditPlanOpen, setIsEditPlanOpen] = useState<boolean>(false);
+  const [isProjectsModalOpen, setIsProjectsModalOpen] = useState<boolean>(false);
   const [processingState, setProcessingState] = useState<{
     isOpen: boolean;
     title: string;
@@ -121,7 +123,7 @@ function App() {
         stageIndex: 1,
       });
 
-      const processRes = await fetch(`${API_BASE}/api/process`, {
+      const processRes = await fetch(`${API_BASE}/api/projects`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -150,7 +152,7 @@ function App() {
   const pollProjectStatus = (projectId: string) => {
     const interval = setInterval(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/status/${projectId}`);
+        const res = await fetch(`${API_BASE}/api/projects/${projectId}/status`);
         const data = await res.json();
 
         setProcessingState((prev) => ({
@@ -177,7 +179,7 @@ function App() {
 
   const loadProject = async (projectId: string) => {
     try {
-      const res = await fetch(`${API_BASE}/api/project/${projectId}`);
+      const res = await fetch(`${API_BASE}/api/projects/${projectId}`);
       const data: ProjectData = await res.json();
       setProject(data);
       setCuts(data.analysis.cuts || []);
@@ -199,11 +201,10 @@ function App() {
     if (!project) return;
     setCuts(updatedCuts);
 
-    fetch(`${API_BASE}/api/cuts/update`, {
+    fetch(`${API_BASE}/api/projects/${project.id}/cuts`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        project_id: project.id,
         cuts: updatedCuts.map((c) => ({ ...c, action: 'cut' })),
       }),
     })
@@ -337,13 +338,9 @@ function App() {
       message: 'Running FFmpeg MPEG-TS concat demuxer for gapless stitching...',
     });
 
-    const formData = new FormData();
-    formData.append('project_id', project.id);
-
     try {
-      const res = await fetch(`${API_BASE}/api/render`, {
+      const res = await fetch(`${API_BASE}/api/projects/${project.id}/render`, {
         method: 'POST',
-        body: formData,
       });
 
       if (!res.ok) {
@@ -373,9 +370,21 @@ function App() {
       <>
         <LandingPage
           onLaunchStudio={() => setCurrentView('studio')}
+          onOpenProjects={() => setIsProjectsModalOpen(true)}
           onOpenSettings={() => setIsSettingsOpen(true)}
           onFileUpload={handleFileUpload}
         />
+        {isProjectsModalOpen && (
+          <ProjectsModal
+            isOpen={isProjectsModalOpen}
+            onClose={() => setIsProjectsModalOpen(false)}
+            onSelectProject={(id) => {
+              setCurrentView('studio');
+              loadProject(id);
+            }}
+            currentProjectId={undefined}
+          />
+        )}
         {isSettingsOpen && (
           <SettingsModal
             settings={settings}
@@ -402,11 +411,12 @@ function App() {
         hasProject={!!project}
         isRendering={isRendering}
         provider={settings.provider}
-        projectName={project?.video_filename}
+        projectName={project?.name || project?.video_filename}
         onNewProject={() => {
           setProject(null);
           setCurrentView('studio');
         }}
+        onOpenProjects={() => setIsProjectsModalOpen(true)}
         onOpenSettings={() => setIsSettingsOpen(true)}
         onOpenEditPlan={() => setIsEditPlanOpen(true)}
         onExport={handleExport}
@@ -478,6 +488,19 @@ function App() {
             />
           </div>
         </main>
+      )}
+
+      {/* Projects Manager Modal */}
+      {isProjectsModalOpen && (
+        <ProjectsModal
+          isOpen={isProjectsModalOpen}
+          onClose={() => setIsProjectsModalOpen(false)}
+          onSelectProject={(id) => {
+            setCurrentView('studio');
+            loadProject(id);
+          }}
+          currentProjectId={project?.id}
+        />
       )}
 
       {/* Edit Plan Modal */}

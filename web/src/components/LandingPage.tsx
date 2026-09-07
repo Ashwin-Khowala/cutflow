@@ -2,12 +2,14 @@ import React from 'react';
 
 interface LandingPageProps {
   onLaunchStudio: () => void;
+  onOpenProjects?: () => void;
   onOpenSettings: () => void;
   onFileUpload: (file: File) => void;
 }
 
 export const LandingPage: React.FC<LandingPageProps> = ({
   onLaunchStudio,
+  onOpenProjects,
   onOpenSettings,
   onFileUpload,
 }) => {
@@ -109,6 +111,25 @@ export const LandingPage: React.FC<LandingPageProps> = ({
           >
             Edit Plan IR
           </a>
+          {onOpenProjects && (
+            <button
+              onClick={onOpenProjects}
+              style={{
+                background: 'rgba(255, 255, 255, 0.05)',
+                border: '1px solid rgba(255, 255, 255, 0.1)',
+                color: '#cbd5e1',
+                borderRadius: '8px',
+                padding: '7px 14px',
+                fontSize: '0.85rem',
+                cursor: 'pointer',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '5px',
+              }}
+            >
+              📁 Projects
+            </button>
+          )}
           <button
             onClick={onOpenSettings}
             style={{
