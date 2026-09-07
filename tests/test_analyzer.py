@@ -326,3 +326,79 @@ def test_text_attribution_precision_with_overlap_check():
     # But for a query that covers most of the segment (e.g., 1.0->12.0)
     text_full = _get_text_in_range_precise(segments, 1.0, 12.0)
     assert "optimizing" in text_full
+
+
+def test_detect_long_silences_at_boundaries():
+    """
+    Test that detect_long_silences snaps to 0.0 at the beginning and total_duration
+    at the end, preventing 0.35s orphan dead air clips.
+    """
+    silences = [
+        SilenceRegion(start=0.0, end=2.0, duration=2.0),
+        SilenceRegion(start=5.0, end=7.5, duration=2.5),
+        SilenceRegion(start=10.0, end=12.0, duration=2.0),
+    ]
+    cuts = detect_long_silences(silences, max_silence=1.5, keep_gap=0.35, total_duration=12.0)
+    assert len(cuts) == 3
+    # Beginning silence must start at 0.0, not 0.35
+    assert cuts[0].start == pytest.approx(0.0)
+    # Middle silence keeps natural padding on both sides
+    assert cuts[1].start == pytest.approx(5.35)
+    assert cuts[1].end == pytest.approx(7.15)
+    # End silence must extend through to total_duration (12.0), not 11.65
+    assert cuts[2].end == pytest.approx(12.0)
+
+
+def test_preroll_and_postroll_dead_air_trimmed():
+    """
+    Test that build_analysis_result automatically trims lead-in dead air before first
+    speech and lead-out dead air after final speech.
+    """
+    segments = [
+        Segment(text="Hello welcome to the demo.", start=2.0, end=5.0),
+        Segment(text="And that concludes everything.", start=6.0, end=9.0),
+    ]
+    transcription = TranscriptionResult(
+        segments=segments,
+        silences=[],
+        duration=12.0,
+        audio_path="test.wav",
+    )
+    res = build_analysis_result(transcription, llm_analysis=[], filler_cuts=[], silence_cuts=[])
+
+    # Should have preroll cut starting at 0.0 and postroll cut ending at 12.0
+    assert any(c.start == pytest.approx(0.0) and "Preroll" in c.explanation for c in res.cuts)
+    assert any(c.end == pytest.approx(12.0) and "Postroll" in c.explanation for c in res.cuts)
+
+    # All keeps must contain real spoken words and not be empty orphan slivers
+    assert len(res.keeps) >= 1
+    assert res.keeps[0].start > 0.0  # Does not have an orphan 0.0 -> 0.35 clip!
+    assert "Hello" in res.keeps[0].text
+    assert res.keeps[-1].end < 12.0  # Does not have an orphan trailing clip!
+    assert "concludes" in res.keeps[-1].text
+
+
+def test_build_keep_regions_eliminates_wordless_clips():
+    """
+    Test that _build_keep_regions never emits empty dead air gaps as keep takes.
+    """
+    segments = [
+        Segment(text="Actual spoken take.", start=3.0, end=6.0),
+    ]
+    transcription = TranscriptionResult(
+        segments=segments,
+        silences=[],
+        duration=10.0,
+        audio_path="test.wav",
+    )
+    # Cuts from 0.0->2.5 and 7.0->10.0 leave gaps [2.5, 3.0] and [6.0, 7.0]
+    # which have no spoken words
+    cuts = [
+        CutProposal(start=0.0, end=2.5, reason=CutReason.LONG_SILENCE, explanation="silence", text="", confidence=0.95),
+        CutProposal(start=7.0, end=10.0, reason=CutReason.LONG_SILENCE, explanation="silence", text="", confidence=0.95),
+    ]
+    keeps = _build_keep_regions(cuts, transcription)
+    # Should only emit the region containing the actual speech [3.0, 6.0]
+    assert len(keeps) == 1
+    assert "Actual spoken take" in keeps[0].text
+

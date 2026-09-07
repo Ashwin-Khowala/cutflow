@@ -229,21 +229,29 @@ def detect_long_silences(
     silences: list[SilenceRegion],
     max_silence: float = 1.8,
     keep_gap: float = 0.35,
+    total_duration: float | None = None,
 ) -> list[CutProposal]:
     """
     Flag silences longer than max_silence seconds for cutting.
-    Keeps a small gap (keep_gap) at the boundaries for natural pacing.
+    Keeps a small gap (keep_gap) at internal boundaries for natural conversational pacing,
+    while snapping to 0.0 at the start and total_duration at the end so lead-in/lead-out
+    dead air is completely eliminated without leaving orphan silence slivers.
     """
     cuts = []
     for s in silences:
         if s.duration > max_silence:
-            # Keep a small gap at start and end for natural feel
-            cut_start = s.start + keep_gap
-            cut_end = s.end - keep_gap
+            # If silence starts near the beginning of the file, cut from 0.0 (no lead-in silence gap)
+            is_at_start = s.start <= 0.25
+            cut_start = 0.0 if is_at_start else s.start + keep_gap
+
+            # If silence extends near the end of the file, cut through to total_duration
+            is_at_end = total_duration is not None and s.end >= (total_duration - 0.4)
+            cut_end = total_duration if is_at_end else s.end - keep_gap
+
             if cut_end > cut_start:
                 cuts.append(CutProposal(
-                    start=cut_start,
-                    end=cut_end,
+                    start=round(cut_start, 3),
+                    end=round(cut_end, 3),
                     reason=CutReason.LONG_SILENCE,
                     explanation=f"Dead air: {s.duration:.1f}s silence",
                     text="[silence]",
@@ -562,6 +570,32 @@ def build_analysis_result(
     )
     segments = transcription.segments
 
+    # Automatic Preroll & Postroll dead air trimming:
+    # If the speaker doesn't start speaking immediately or stops speaking before the file ends,
+    # cut lead-in and lead-out dead air cleanly.
+    if segments:
+        first_speech = segments[0].words[0].start if (segments[0].words) else segments[0].start
+        if first_speech > 0.35:
+            all_cuts.append(CutProposal(
+                start=0.0,
+                end=round(max(0.0, first_speech - 0.15), 3),
+                reason=CutReason.LONG_SILENCE,
+                explanation="Preroll dead air before first spoken sentence",
+                text="[silence]",
+                confidence=0.98,
+            ))
+
+        last_speech = segments[-1].words[-1].end if (segments[-1].words) else segments[-1].end
+        if transcription.duration - last_speech > 0.35:
+            all_cuts.append(CutProposal(
+                start=round(min(transcription.duration, last_speech + 0.20), 3),
+                end=round(transcription.duration, 3),
+                reason=CutReason.LONG_SILENCE,
+                explanation="Postroll dead air after final spoken sentence",
+                text="[silence]",
+                confidence=0.98,
+            ))
+
     # Process LLM analysis into CutProposals
     for item in llm_analysis:
         if item.get("action") != "cut":
@@ -716,6 +750,23 @@ def _merge_overlapping_cuts(
 
         merged = new_merged
 
+    # Clean file boundaries (eliminate useless orphan slivers at start and end)
+    if merged and merged[0].start <= 0.35:
+        merged[0].start = 0.0
+
+    if merged and transcription is not None and merged[-1].end >= (transcription.duration - 0.35):
+        merged[-1].end = transcription.duration
+
+    # If first cut starts before the first spoken word, snap it all the way to 0.0
+    if merged and transcription is not None and transcription.segments:
+        first_speech = transcription.segments[0].words[0].start if (transcription.segments[0].words) else transcription.segments[0].start
+        if merged[0].start < first_speech:
+            merged[0].start = 0.0
+
+        last_speech = transcription.segments[-1].words[-1].end if (transcription.segments[-1].words) else transcription.segments[-1].end
+        if merged[-1].end > last_speech:
+            merged[-1].end = transcription.duration
+
     return merged
 
 
@@ -727,8 +778,8 @@ def _build_keep_regions(
     """
     Build keep regions strictly from the gaps between the final merged cuts.
     Guarantees that visual keep slices and timeline cuts are 100% complementary.
-    Filters out orphan keep slivers shorter than min_keep_duration (< 0.3s) which
-    are always silence-boundary rounding artefacts, never real speech.
+    Filters out orphan keep slivers shorter than min_keep_duration (< 0.3s) or
+    regions without actual spoken words (silence-boundary rounding artefacts).
     """
     keeps = []
     current_start = 0.0
@@ -738,11 +789,19 @@ def _build_keep_regions(
         gap_dur = cut.start - current_start
         if gap_dur > min_keep_duration:
             text = _get_text_in_range_precise(transcription.segments, current_start, cut.start).strip()
-            keeps.append(KeepRegion(
-                start=current_start,
-                end=cut.start,
-                text=text,
-            ))
+            # Verify the keep region actually contains spoken words (not pure dead air)
+            has_words = bool(re.search(r"[a-zA-Z0-9]", text))
+            if has_words or not cuts:
+                keeps.append(KeepRegion(
+                    start=current_start,
+                    end=cut.start,
+                    text=text,
+                ))
+            else:
+                # No words in this gap: it's dead air / silence artifact.
+                # If at start, snap the cut start back to current_start (0.0)
+                if current_start == 0.0:
+                    cut.start = 0.0
         elif gap_dur > 0.05:
             # Orphan sliver < min_keep_duration — extend the current cut to absorb it
             # by pushing current_start forward (let the cut win)
@@ -752,11 +811,16 @@ def _build_keep_regions(
     # Final keep region after last cut
     if current_start < total_duration - min_keep_duration:
         text = _get_text_in_range_precise(transcription.segments, current_start, total_duration).strip()
-        keeps.append(KeepRegion(
-            start=current_start,
-            end=total_duration,
-            text=text,
-        ))
+        has_words = bool(re.search(r"[a-zA-Z0-9]", text))
+        if has_words or not cuts:
+            keeps.append(KeepRegion(
+                start=current_start,
+                end=total_duration,
+                text=text,
+            ))
+        elif cuts:
+            # Trailing dead air without words: snap last cut to total_duration
+            cuts[-1].end = total_duration
 
     return keeps
 
@@ -837,7 +901,7 @@ def analyze_transcript(
     if progress_callback:
         progress_callback(25.0, "Analyzing silence and dead air boundaries...")
     print("🔇 Analyzing silence regions...")
-    silence_cuts = detect_long_silences(transcription.silences, max_silence=max_silence)
+    silence_cuts = detect_long_silences(transcription.silences, max_silence=max_silence, total_duration=transcription.duration)
     print(f"   Found {len(silence_cuts)} cuttable silences")
 
     if progress_callback:

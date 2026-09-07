@@ -13,7 +13,7 @@ from fastapi import HTTPException
 from cutflow.config import PROJECTS_DIR, UPLOAD_DIR
 from cutflow.services.jobs import jobs
 from cutflow.schemas import CutOverride, ProjectPatchRequest
-from cutflow.transcriber import TranscriptionResult, Segment, Word
+from cutflow.transcriber import TranscriptionResult, Segment, Word, SilenceRegion
 from cutflow.analyzer import (
     AnalysisResult,
     CutProposal,
@@ -338,9 +338,13 @@ def update_project_cuts(project_id: str, cuts: List[CutOverride]) -> Dict[str, A
         )
         for s in transcript_data.get("segments", [])
     ]
+    silences = [
+        SilenceRegion(start=s["start"], end=s["end"], duration=s["duration"])
+        for s in transcript_data.get("silences", [])
+    ]
     transcription = TranscriptionResult(
         segments=segments,
-        silences=[],
+        silences=silences,
         duration=transcript_data.get("duration", 0),
         audio_path="",
     )
