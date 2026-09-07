@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import type { CutProposal, KeepRegion, SilenceRegion } from '../types';
+import type { CutProposal, KeepRegion, SilenceRegion, SelectedClip } from '../types';
 import { Waveform } from './Waveform';
 
 interface TimelineProps {
@@ -8,7 +8,9 @@ interface TimelineProps {
   keeps: KeepRegion[];
   cuts: CutProposal[];
   silences?: SilenceRegion[];
+  selectedClip?: SelectedClip | null;
   onSeek: (time: number) => void;
+  onSelectClip?: (clip: SelectedClip | null) => void;
 }
 
 export const Timeline: React.FC<TimelineProps> = ({
@@ -17,7 +19,9 @@ export const Timeline: React.FC<TimelineProps> = ({
   keeps,
   cuts,
   silences = [],
+  selectedClip,
   onSeek,
+  onSelectClip,
 }) => {
   const [hoverTime, setHoverTime] = useState<number | null>(null);
   const [hoverX, setHoverX] = useState<number>(0);
@@ -130,20 +134,39 @@ export const Timeline: React.FC<TimelineProps> = ({
           {keeps.map((k, idx) => {
             const left = duration > 0 ? (k.start / duration) * 100 : 0;
             const width = duration > 0 ? ((k.end - k.start) / duration) * 100 : 0;
+            const isSelected = selectedClip?.type === 'keep' && Math.abs(selectedClip.start - k.start) < 0.05 && Math.abs(selectedClip.end - k.end) < 0.05;
+
             return (
               <div
                 key={`keep-${idx}`}
-                className="timeline-slice keep"
+                className={`timeline-slice keep ${isSelected ? 'is-selected' : ''}`}
                 style={{
                   position: 'absolute',
                   left: `${left}%`,
                   width: `${width}%`,
                   height: '100%',
-                  background: 'rgba(16, 185, 129, 0.45)',
-                  borderLeft: '1px solid rgba(16, 185, 129, 0.8)',
-                  borderRight: '1px solid rgba(16, 185, 129, 0.8)',
+                  background: isSelected ? 'rgba(16, 185, 129, 0.75)' : 'rgba(16, 185, 129, 0.45)',
+                  border: isSelected ? '2px solid #a855f7' : 'none',
+                  borderLeft: isSelected ? '2px solid #a855f7' : '1px solid rgba(16, 185, 129, 0.8)',
+                  borderRight: isSelected ? '2px solid #a855f7' : '1px solid rgba(16, 185, 129, 0.8)',
+                  boxShadow: isSelected ? '0 0 12px rgba(168, 85, 247, 0.9)' : 'none',
+                  zIndex: isSelected ? 6 : 2,
+                  cursor: 'pointer',
+                  transition: 'background 0.15s, box-shadow 0.15s',
                 }}
-                title={`Keep Take: ${k.start.toFixed(1)}s → ${k.end.toFixed(1)}s: ${k.text}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectClip?.({
+                    id: `keep-${idx}`,
+                    type: 'keep',
+                    start: k.start,
+                    end: k.end,
+                    duration: k.end - k.start,
+                    text: k.text,
+                  });
+                  onSeek(k.start);
+                }}
+                title={`Keep Take: ${k.start.toFixed(1)}s → ${k.end.toFixed(1)}s (${(k.end - k.start).toFixed(1)}s): ${k.text} (Click to select/cut)`}
               />
             );
           })}
@@ -153,20 +176,42 @@ export const Timeline: React.FC<TimelineProps> = ({
             if (c.action === 'keep') return null;
             const left = duration > 0 ? (c.start / duration) * 100 : 0;
             const width = duration > 0 ? ((c.end - c.start) / duration) * 100 : 0;
+            const isSelected = selectedClip?.type === 'cut' && Math.abs(selectedClip.start - c.start) < 0.05 && Math.abs(selectedClip.end - c.end) < 0.05;
+
             return (
               <div
                 key={`cut-${idx}`}
-                className="timeline-slice cut"
+                className={`timeline-slice cut ${isSelected ? 'is-selected' : ''}`}
                 style={{
                   position: 'absolute',
                   left: `${left}%`,
                   width: `${width}%`,
                   height: '100%',
-                  background: 'rgba(244, 63, 94, 0.55)',
-                  borderLeft: '1px solid rgba(244, 63, 94, 0.9)',
-                  borderRight: '1px solid rgba(244, 63, 94, 0.9)',
+                  background: isSelected ? 'rgba(244, 63, 94, 0.85)' : 'rgba(244, 63, 94, 0.55)',
+                  border: isSelected ? '2px solid #a855f7' : 'none',
+                  borderLeft: isSelected ? '2px solid #a855f7' : '1px solid rgba(244, 63, 94, 0.9)',
+                  borderRight: isSelected ? '2px solid #a855f7' : '1px solid rgba(244, 63, 94, 0.9)',
+                  boxShadow: isSelected ? '0 0 12px rgba(168, 85, 247, 0.9)' : 'none',
+                  zIndex: isSelected ? 6 : 2,
+                  cursor: 'pointer',
+                  transition: 'background 0.15s, box-shadow 0.15s',
                 }}
-                title={`Cut [${c.reason}]: ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s: ${c.text || c.explanation}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onSelectClip?.({
+                    id: `cut-${idx}`,
+                    type: 'cut',
+                    start: c.start,
+                    end: c.end,
+                    duration: c.end - c.start,
+                    text: c.text,
+                    reason: c.reason,
+                    explanation: c.explanation,
+                    originalIndex: idx,
+                  });
+                  onSeek(c.start);
+                }}
+                title={`Cut [${c.reason}]: ${c.start.toFixed(1)}s → ${c.end.toFixed(1)}s (${(c.end - c.start).toFixed(1)}s): ${c.text || c.explanation} (Click to select/restore)`}
               />
             );
           })}

@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Header } from './components/Header';
 import { LandingPage } from './components/LandingPage';
 import { UploadHero } from './components/UploadHero';
@@ -6,10 +6,11 @@ import { VideoPlayer } from './components/VideoPlayer';
 import { Timeline } from './components/Timeline';
 import { TranscriptList } from './components/TranscriptList';
 import { StatsBar } from './components/StatsBar';
+import { SelectedClipBar } from './components/SelectedClipBar';
 import { SettingsModal } from './components/SettingsModal';
 import { ProcessingModal } from './components/ProcessingModal';
 import { EditPlanViewer } from './components/EditPlanViewer';
-import type { ProjectData, CutProposal, Settings } from './types';
+import type { ProjectData, CutProposal, Settings, SelectedClip } from './types';
 import './App.css';
 
 const API_BASE = import.meta.env.VITE_API_URL || '';
@@ -18,6 +19,8 @@ function App() {
   const [currentView, setCurrentView] = useState<'landing' | 'studio'>('landing');
   const [project, setProject] = useState<ProjectData | null>(null);
   const [cuts, setCuts] = useState<CutProposal[]>([]);
+  const [selectedClip, setSelectedClip] = useState<SelectedClip | null>(null);
+  const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [currentTime, setCurrentTime] = useState<number>(0);
   const [duration, setDuration] = useState<number>(0);
   const [autoSkipCuts, setAutoSkipCuts] = useState<boolean>(true);
@@ -185,36 +188,17 @@ function App() {
     }
   };
 
-  const handleToggleCut = (segmentIndex: number) => {
+  const showToast = (msg: string) => {
+    setToastMessage(msg);
+    setTimeout(() => {
+      setToastMessage((prev) => (prev === msg ? null : prev));
+    }, 2500);
+  };
+
+  const syncCutsWithBackend = (updatedCuts: CutProposal[]) => {
     if (!project) return;
-    const seg = project.transcript.segments[segmentIndex];
-    const existingCutIdx = cuts.findIndex(
-      (c) => seg.start >= c.start - 0.1 && seg.end <= c.end + 0.5
-    );
-
-    let updatedCuts: CutProposal[];
-    if (existingCutIdx >= 0) {
-      // Restore segment
-      updatedCuts = cuts.filter((_, idx) => idx !== existingCutIdx);
-    } else {
-      // Cut segment
-      updatedCuts = [
-        ...cuts,
-        {
-          start: seg.start,
-          end: seg.end,
-          reason: 'manual_cut',
-          explanation: 'User manual override',
-          text: seg.text,
-          confidence: 1.0,
-          action: 'cut',
-        },
-      ];
-    }
-
     setCuts(updatedCuts);
 
-    // Sync overrides with backend
     fetch(`${API_BASE}/api/cuts/update`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -234,6 +218,115 @@ function App() {
       })
       .catch(console.error);
   };
+
+  const handleToggleCut = (segmentIndex: number) => {
+    if (!project) return;
+    const seg = project.transcript.segments[segmentIndex];
+    const existingCutIdx = cuts.findIndex(
+      (c) => seg.start >= c.start - 0.1 && seg.end <= c.end + 0.5
+    );
+
+    let updatedCuts: CutProposal[];
+    if (existingCutIdx >= 0) {
+      // Restore segment
+      updatedCuts = cuts.filter((_, idx) => idx !== existingCutIdx);
+      showToast('Restored segment take');
+    } else {
+      // Cut segment
+      updatedCuts = [
+        ...cuts,
+        {
+          start: seg.start,
+          end: seg.end,
+          reason: 'manual_cut',
+          explanation: 'User manual override',
+          text: seg.text,
+          confidence: 1.0,
+          action: 'cut',
+        },
+      ];
+      showToast('Cut segment take');
+    }
+
+    syncCutsWithBackend(updatedCuts);
+  };
+
+  const handleCutClip = (clip: SelectedClip) => {
+    if (!project) return;
+    const newCut: CutProposal = {
+      start: clip.start,
+      end: clip.end,
+      reason: 'manual_cut',
+      explanation: clip.text ? `Manually cut: "${clip.text.slice(0, 45)}..."` : 'Manual clip removal',
+      text: clip.text || '',
+      confidence: 1.0,
+      action: 'cut',
+    };
+    const updatedCuts = [...cuts, newCut];
+    syncCutsWithBackend(updatedCuts);
+    setSelectedClip({
+      ...clip,
+      type: 'cut',
+      reason: 'manual_cut',
+      explanation: newCut.explanation,
+    });
+    showToast(`Cut clip (${clip.duration.toFixed(1)}s)`);
+  };
+
+  const handleRestoreClip = (clip: SelectedClip) => {
+    if (!project) return;
+    const updatedCuts = cuts.filter((c) => {
+      const overlaps = Math.max(0, Math.min(c.end, clip.end) - Math.max(c.start, clip.start));
+      const dur = Math.max(0.01, c.end - c.start);
+      return overlaps < dur * 0.5;
+    });
+    syncCutsWithBackend(updatedCuts);
+    setSelectedClip({
+      ...clip,
+      type: 'keep',
+      reason: undefined,
+    });
+    showToast(`Restored clip take (${clip.duration.toFixed(1)}s)`);
+  };
+
+  const handleCleanShortClips = () => {
+    if (!project || !project.analysis?.keeps) return;
+    const shortKeeps = project.analysis.keeps.filter((k) => (k.end - k.start) <= 2.5);
+    if (shortKeeps.length === 0) {
+      showToast('No short clips (≤2.5s) found to clean');
+      return;
+    }
+    const newCuts: CutProposal[] = shortKeeps.map((k) => ({
+      start: k.start,
+      end: k.end,
+      reason: 'short_fragment',
+      explanation: `Cleaned short clip (${(k.end - k.start).toFixed(2)}s)`,
+      text: k.text || '',
+      confidence: 0.95,
+      action: 'cut',
+    }));
+    const updatedCuts = [...cuts, ...newCuts];
+    syncCutsWithBackend(updatedCuts);
+    setSelectedClip(null);
+    showToast(`Cleaned ${shortKeeps.length} short clip${shortKeeps.length > 1 ? 's' : ''}`);
+  };
+
+  // Keyboard shortcut listener for Delete / Backspace & Escape
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (['INPUT', 'TEXTAREA'].includes((e.target as HTMLElement)?.tagName)) {
+        return;
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClip && selectedClip.type === 'keep') {
+        e.preventDefault();
+        handleCutClip(selectedClip);
+      } else if (e.key === 'Escape' && selectedClip) {
+        setSelectedClip(null);
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [selectedClip, cuts, project]);
 
   const handleExport = async () => {
     if (!project) return;
@@ -270,6 +363,9 @@ function App() {
   };
 
   const cutDuration = cuts.reduce((sum, c) => sum + (c.end - c.start), 0);
+  const shortClipsCount = project?.analysis?.keeps
+    ? project.analysis.keeps.filter((k) => (k.end - k.start) <= 2.5).length
+    : 0;
 
   // If on landing page and no active project
   if (currentView === 'landing' && !project) {
@@ -341,7 +437,21 @@ function App() {
                   keeps={project.analysis.keeps || []}
                   cuts={cuts}
                   silences={project.transcript.silences || []}
+                  selectedClip={selectedClip}
                   onSeek={setCurrentTime}
+                  onSelectClip={setSelectedClip}
+                />
+              </div>
+
+              <div style={{ marginTop: '0.85rem' }}>
+                <SelectedClipBar
+                  selectedClip={selectedClip}
+                  shortClipsCount={shortClipsCount}
+                  onCutClip={handleCutClip}
+                  onRestoreClip={handleRestoreClip}
+                  onPlayClip={(clip) => setCurrentTime(clip.start)}
+                  onDeselect={() => setSelectedClip(null)}
+                  onCleanShortClips={handleCleanShortClips}
                 />
               </div>
 
@@ -361,8 +471,10 @@ function App() {
               segments={project.transcript.segments}
               cuts={cuts}
               currentTime={currentTime}
+              selectedClip={selectedClip}
               onSeek={setCurrentTime}
               onToggleCut={handleToggleCut}
+              onSelectClip={setSelectedClip}
             />
           </div>
         </main>
@@ -394,6 +506,33 @@ function App() {
           progress={processingState.progress}
           stageIndex={processingState.stageIndex}
         />
+      )}
+
+      {/* Quick Action Toast */}
+      {toastMessage && (
+        <div
+          style={{
+            position: 'fixed',
+            bottom: '24px',
+            right: '24px',
+            background: 'rgba(15, 23, 42, 0.95)',
+            border: '1px solid rgba(168, 85, 247, 0.6)',
+            boxShadow: '0 8px 24px rgba(0, 0, 0, 0.6), 0 0 16px rgba(168, 85, 247, 0.3)',
+            borderRadius: '8px',
+            padding: '0.7rem 1.2rem',
+            color: '#ffffff',
+            fontSize: '0.85rem',
+            fontWeight: 500,
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            gap: '0.65rem',
+            backdropFilter: 'blur(12px)',
+          }}
+        >
+          <span style={{ color: '#c084fc', fontSize: '1.1rem' }}>✨</span>
+          <span>{toastMessage}</span>
+        </div>
       )}
     </div>
   );

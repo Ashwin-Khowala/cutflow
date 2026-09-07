@@ -42,6 +42,18 @@ export interface KeepRegion {
   text: string;
 }
 
+export interface SelectedClip {
+  id: string;
+  type: 'keep' | 'cut';
+  start: number;
+  end: number;
+  duration: number;
+  text: string;
+  reason?: string;
+  explanation?: string;
+  originalIndex?: number;
+}
+
 export interface Analysis {
   summary: string;
   total_duration: number;

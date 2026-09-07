@@ -1,21 +1,25 @@
 import React, { useState } from 'react';
-import type { Segment, CutProposal } from '../types';
+import type { Segment, CutProposal, SelectedClip } from '../types';
 import { Check, X, Search, FileText, Scissors, ListFilter } from 'lucide-react';
 
 interface TranscriptListProps {
   segments: Segment[];
   cuts: CutProposal[];
   currentTime: number;
+  selectedClip?: SelectedClip | null;
   onSeek: (time: number) => void;
   onToggleCut: (segmentIndex: number) => void;
+  onSelectClip?: (clip: SelectedClip | null) => void;
 }
 
 export const TranscriptList: React.FC<TranscriptListProps> = ({
   segments,
   cuts,
   currentTime,
+  selectedClip,
   onSeek,
   onToggleCut,
+  onSelectClip,
 }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterType, setFilterType] = useState<'all' | 'clean' | 'cuts'>('all');
@@ -170,13 +174,31 @@ export const TranscriptList: React.FC<TranscriptListProps> = ({
         ) : (
           filteredSegments.map(({ seg, originalIndex, cutMatch, isCut }) => {
             const isActive = currentTime >= seg.start && currentTime < seg.end;
+            const isSelected = selectedClip && Math.abs(selectedClip.start - seg.start) < 0.15;
 
             return (
               <div
                 key={`seg-${originalIndex}`}
-                className={`segment-card ${isCut ? 'is-cut' : 'is-keep'} ${isActive ? 'is-active' : ''}`}
-                onClick={() => onSeek(seg.start)}
-                style={{ cursor: 'pointer' }}
+                className={`segment-card ${isCut ? 'is-cut' : 'is-keep'} ${isActive ? 'is-active' : ''} ${isSelected ? 'is-selected' : ''}`}
+                onClick={() => {
+                  onSeek(seg.start);
+                  onSelectClip?.({
+                    id: `seg-${originalIndex}`,
+                    type: isCut ? 'cut' : 'keep',
+                    start: seg.start,
+                    end: seg.end,
+                    duration: seg.end - seg.start,
+                    text: seg.text,
+                    reason: cutMatch?.reason,
+                    explanation: cutMatch?.explanation,
+                    originalIndex,
+                  });
+                }}
+                style={{
+                  cursor: 'pointer',
+                  border: isSelected ? '1px solid #a855f7' : undefined,
+                  boxShadow: isSelected ? '0 0 10px rgba(168, 85, 247, 0.4)' : undefined,
+                }}
               >
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '0.4rem' }}>
                   <div>
